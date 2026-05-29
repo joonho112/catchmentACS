@@ -1,0 +1,398 @@
+---
+title: "Providers, Credentials, and Offline Paths"
+vignette: >
+  %\VignetteIndexEntry{Providers, Credentials, and Offline Paths}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  warning: false
+  message: false
+---
+
+This article is the v0.5.0 status page for live services and no-network paths in `catchmentACS`. It answers three practical questions:
+
+1. Which services are implemented now?
+2. Which credentials are required?
+3. How can examples, tests, and reports run offline without accidentally calling Census or a routing provider?
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+
+old_options <- options(
+  catchmentACS.progress = "off",
+  catchmentACS.rate_first_default = FALSE
+)
+old_cache <- getOption("catchmentACS.cache_enabled", NULL)
+on.exit(options(old_options), add = TRUE)
+on.exit(options(catchmentACS.cache_enabled = old_cache), add = TRUE)
+cacs_set_cache(FALSE, scope = "session")
+```
+
+::: {.callout-note}
+## About the data in this article
+
+Every table and check here is built entirely from the package's bundled
+`inst/extdata` fixtures (the synthetic `legacy_2025_*` objects and
+`sample_alabama_subset`), so this article renders with **no** Census, OSRM, ORS,
+or other network calls. These fixtures preserve the production calling contract
+(sites, drive-time polygons, tract-level ACS variables) but are **synthetic and
+illustrative** — included only for examples, tests, and reproducible package
+checks. They are **not** live Alabama policy estimates and must not be cited as
+real ACS results. The live code blocks below are shown for reference and marked
+non-evaluated; the one provider probe that does run points at an unreachable
+localhost port so it stays offline and deterministic. Any real analysis requires
+a fresh live run.
+:::
+
+## Status matrix
+
+```{r}
+#| label: status-matrix
+#| eval: true
+
+tibble::tribble(
+  ~surface, ~status, ~credential, ~notes,
+  "Census ACS5 tracts", "implemented", "Census API key required for live metadata/data",
+  "Release-verified for 2009-2024. Cache hits and `acs =` bypass do not need a key.",
+  "OSRM", "implemented", "none for public demo",
+  "Default provider. Public demo is convenient but can be slow or rate-limited.",
+  "OSRM docker/self-hosted", "implemented", "local server URL",
+  "Use `osrm_mode = \"docker\"` or provider args for a local/custom server.",
+  "OpenRouteService (ORS)", "implemented", "`ors_api_key` or `ORS_API_KEY`",
+  "Requires optional openrouteservice package and a non-empty API key.",
+  "Mapbox", "reserved fail-loud", "`MAPBOX_TOKEN` not used yet",
+  "Provider name is retained, but selecting it aborts in this release.",
+  "r5r", "reserved fail-loud", "r5r core not used yet",
+  "Provider name is retained, but selecting it aborts in this release.",
+  "Area weighting", "implemented", "none",
+  "The supported v0.5.0 aggregation method.",
+  "Population weighting", "reserved fail-loud", "future population surface",
+  "`weight_method = \"population\"` aborts before network or spatial work."
+)
+```
+
+The short version: use `provider = "osrm"` for the easiest live route, use `provider = "ors"` when you have an ORS key, and use `precomputed_isochrones` plus `acs` whenever you need a completely offline run.
+
+## Which provider should I use?
+
+OSRM and ORS are the two live routing paths in v0.5.0; Mapbox and r5r are reserved names that abort (see "Fail-loud reserved providers"). The decision is mostly about volume and whether you can stand up a local server:
+
+| You want to... | Use | Setup / key |
+|---|---|---|
+| Try the package or run a handful of sites | `provider = "osrm"`, `osrm_mode = "demo"` | No key, no setup; shared public demo, can be slow or HTTP 429 rate-limited |
+| Run a production batch (many sites, high `res`) | `provider = "osrm"`, `osrm_mode = "docker"` | A local/self-hosted OSRM server (default `http://0.0.0.0:5000/`); no per-request quota |
+| Avoid hosting OSRM but still route remotely | `provider = "ors"` | Optional `openrouteservice` package **and** a non-empty `ors_api_key` / `ORS_API_KEY` |
+| Render docs, tests, or reproducible reports | none — supply `precomputed_isochrones =` and `acs =` | Fully offline; no key, no network (this article's path) |
+
+Rules of thumb: the OSRM public demo is for convenience and low volume, not large jobs; a local OSRM docker endpoint is the production default once batches grow; ORS is the remote alternative when you have a key but cannot self-host. Mapbox and r5r are roadmap names only. The rest of this article covers credentials and each path in detail.
+
+## Credentials
+
+### Census API
+
+ACS downloads are handled by `tidycensus`. Register a Census key once in an interactive R session:
+
+```{r}
+#| label: census-key
+#| eval: false
+
+tidycensus::census_api_key("YOUR_KEY_HERE", install = TRUE)
+```
+
+After restart, `cacs_run()` can call `cacs_acs_prefetch()` automatically in the full live path. A key is checked only after local validation and an ACS cache miss, before live `tidycensus::load_variables()` or `tidycensus::get_acs()` calls. If you pass `acs = <sf>` or hit a warm ACS cache entry, the live ACS stage is skipped and no Census key is required. v0.5.0 supports ACS5 end years 2009-2024 (2024 is the most recent vintage). See `?cacs_acs_prefetch` for the prefetch contract and `?cacs_acs_validate` for checking your own ACS table.
+
+### OSRM
+
+OSRM is the default routing provider and needs no API key when using the public demo endpoint:
+
+```{r}
+#| label: osrm-live-demo
+#| eval: false
+
+iso <- cacs_isochrone(
+  sites = cacs_alabama_sites[1:3, ],
+  drive_times = c(5, 10, 15),
+  provider = "osrm",
+  osrm_mode = "demo",
+  res = 30L,
+  verbose = TRUE
+)
+```
+
+For heavier batch work, prefer a local or self-hosted OSRM endpoint. The public demo endpoint is shared infrastructure and can return HTTP 429 under load.
+
+```{r}
+#| label: osrm-docker
+#| eval: false
+
+iso <- cacs_isochrone(
+  sites = cacs_alabama_sites[1:3, ],
+  drive_times = c(5, 10, 15),
+  provider = "osrm",
+  osrm_mode = "docker",
+  `osrm.server` = "http://0.0.0.0:5000/",
+  verbose = TRUE
+)
+```
+
+When `res` is omitted on the public demo path, v0.5.0 protects the demo budget by resolving to a lower default than the self-hosted path. Pass `res` explicitly when reproducibility of polygon detail matters.
+
+Before a long OSRM run, you can probe the endpoint with `cacs_validate_osrm_endpoint()`. It is a probe, not a gate: it never throws, returning a one-row tibble whose `quota_ok` flag and `http_status` you inspect (a known-saturated demo also emits a classed `catchmentACS_warning_provider_quota_exhausted` warning). The rendered vignette uses a known-unreachable localhost port, so the chunk stays offline and deterministic; the connection simply fails and `quota_ok` comes back `FALSE`.
+
+```{r}
+#| label: osrm-endpoint-preflight-offline
+#| eval: true
+
+cacs_validate_osrm_endpoint(
+  server = "http://localhost:9",
+  timeout = 1
+)
+```
+
+For a real live preflight, omit `server` or point it at your self-hosted endpoint:
+
+```{r}
+#| label: osrm-endpoint-preflight-live
+#| eval: false
+
+cacs_validate_osrm_endpoint()
+cacs_validate_osrm_endpoint(server = "http://localhost:5000", timeout = 2)
+```
+
+### ORS
+
+ORS is implemented, but it requires the optional `openrouteservice` package and a non-empty API key supplied through `ors_api_key` or `ORS_API_KEY`.
+
+```{r}
+#| label: ors-live
+#| eval: false
+
+Sys.getenv("ORS_API_KEY")
+
+iso <- cacs_isochrone(
+  sites = cacs_alabama_sites[1:3, ],
+  drive_times = c(5, 10, 15),
+  provider = "ors",
+  ors_api_key = Sys.getenv("ORS_API_KEY"),
+  verbose = TRUE
+)
+```
+
+Do not put API keys directly in scripts or vignettes. Use `.Renviron`, an environment manager, or CI secrets.
+
+## Offline bypass paths
+
+`cacs_run()` selects its execution path from the presence or absence of two optional inputs:
+
+```{r}
+#| label: execution-path-table
+#| eval: true
+
+tibble::tribble(
+  ~execution_path, ~precomputed_isochrones, ~acs, ~network_behavior,
+  "5-call", "not supplied", "not supplied",
+  "Calls both routing provider and tidycensus.",
+  "4-call-A", "supplied", "not supplied",
+  "Skips routing provider; still calls tidycensus.",
+  "4-call-B", "not supplied", "supplied",
+  "Calls routing provider; skips tidycensus.",
+  "3-call", "supplied", "supplied",
+  "Skips both routing provider and tidycensus."
+)
+```
+
+The package vignettes use the `3-call` path. The `provider` column still records the provenance of the precomputed isochrone, but no live provider is called while the article renders. The bundled legacy isochrones are synthetic buffered-circle polygons; `provider = "osrm"` records OSRM-style provenance metadata and does not imply a live OSRM request during rendering.
+
+```{r}
+#| label: fixture-provenance
+#| eval: true
+
+legacy_iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+
+legacy_iso |>
+  sf::st_drop_geometry() |>
+  count(provider, provider_requested, profile,
+        osm_snapshot_date, ring_topology)
+```
+
+Here is the smallest complete offline `cacs_run()` provider check:
+
+```{r}
+#| label: offline-provider-check
+#| eval: true
+
+legacy_sites <- readRDS(system.file(
+  "extdata", "legacy_2025_sites.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id <- "AL_SITE_03"
+iso_one <- legacy_iso |>
+  filter(site_id == !!site_id, drive_time_min == 5L)
+site_one <- legacy_sites |>
+  filter(site_id == !!site_id)
+
+out <- cacs_run(
+  sites = site_one,
+  state = "AL",
+  year = 2023,
+  drive_times = 5L,
+  variables = unname(cacs_acs_default_vars),
+  provider = "osrm",
+  precomputed_isochrones = iso_one,
+  acs = acs,
+  weight_method = "area",
+  output = "long",
+  verbose = FALSE
+)
+
+attr(out, "cacs_run_provenance") |>
+  as.data.frame() |>
+  select(execution_path, provider, bypass_iso, bypass_acs,
+         weight_method, output_format)
+```
+
+Use the same pattern in tests and reproducible reports: ship or load the exact `sf` ACS and isochrone inputs, pass them into `cacs_run()`, and record the resulting provenance attributes. For the same offline call worked into a full reporting table, see `vignette("alabama-tutorial", package = "catchmentACS")`.
+
+## Fail-loud reserved providers
+
+Mapbox and r5r are in the provider enum for compatibility and roadmap visibility, but they are intentionally not live routing paths in v0.5.0. Selecting either one raises a structured `catchmentACS_error_credential` condition rather than silently returning a placeholder. The check below catches that condition and reports only its class, so the chunk stays offline and prints no raw provider message.
+
+```{r}
+#| label: fail-loud-check
+#| eval: true
+
+demo_site <- tibble::tibble(
+  site_id = "S01",
+  lon = -86.80902,
+  lat = 33.52203
+)
+
+condition_class <- function(expr) {
+  tryCatch(
+    {
+      force(expr)
+      "no_error"
+    },
+    catchmentACS_error = function(e) class(e)[[1L]],
+    error = function(e) class(e)[[1L]]
+  )
+}
+
+fake_r5r_core <- structure(list(), class = c("r5r_core", "list"))
+
+tibble::tibble(
+  provider = c("mapbox", "r5r"),
+  condition = c(
+    condition_class(cacs_isochrone(
+      sites = demo_site,
+      provider = "mapbox",
+      drive_times = 5L,
+      mapbox_token = "FAKE_TOKEN_FOR_DOCS",
+      verbose = FALSE
+    )),
+    condition_class(cacs_isochrone(
+      sites = demo_site,
+      provider = "r5r",
+      drive_times = 5L,
+      r5r_core = fake_r5r_core,
+      verbose = FALSE
+    ))
+  )
+)
+```
+
+The same release-status principle applies to `weight_method = "population"`: the argument is reserved, but the implementation is not active in this release. It fails loud at the orchestrator boundary, before any network or spatial work begins.
+
+```{r}
+#| label: population-fail-loud
+#| eval: true
+
+condition_class(cacs_run(
+  sites = demo_site,
+  state = "AL",
+  drive_times = 5L,
+  provider = "osrm",
+  weight_method = "population",
+  verbose = FALSE
+))
+```
+
+## Cache behavior
+
+The persistent cache is useful for live work, especially provider and ACS calls. Vignettes disable it for deterministic no-network rendering.
+
+```{r}
+#| label: cache-state
+#| eval: true
+
+cacs_get_cache_state() |>
+  select(enabled, cache_dir, namespace_mode, counters) |>
+  mutate(cache_dir = "<user-cache-dir>/catchmentACS")
+```
+
+For interactive live analysis, the default cache can save repeated requests. A warm ACS cache entry returns without calling Census and without requiring `CENSUS_API_KEY`; `force_refresh = TRUE` deliberately bypasses that cache and therefore requires a key. If a live ACS or isochrone input changes and you want a fresh pull, clear the relevant namespace or pass provider/fetch arguments that change the cache key.
+
+```{r}
+#| label: cache-maintenance
+#| eval: false
+
+cacs_cache_status()
+cacs_clear_cache("isochrone", confirm = FALSE)
+cacs_clear_cache("acs", confirm = FALSE)
+```
+
+## Live full-run template
+
+The full live path is concise. It is non-evaluated here because it calls both a routing provider and Census.
+
+```{r}
+#| label: live-run-template
+#| eval: false
+
+tidycensus::census_api_key("YOUR_KEY_HERE", install = TRUE)
+
+result <- cacs_run(
+  sites = cacs_alabama_sites,
+  state = "AL",
+  year = 2023,
+  drive_times = c(5, 10, 15),
+  variables = unname(cacs_acs_default_vars),
+  provider = "osrm",
+  weight_method = "area",
+  output = "long",
+  verbose = TRUE
+)
+
+summary(result)$rates_per_site_moe
+attr(result, "cacs_run_provenance")
+```
+
+## Where to next
+
+- **Your first run in ten minutes** — the whole pipeline in one offline call:
+  `vignette("getting-started", package = "catchmentACS")`.
+- **A full reporting workflow** on Alabama sites, taken from the raw pipeline to
+  export-ready tables:
+  `vignette("alabama-tutorial", package = "catchmentACS")`.
+- **The math** behind area weighting and MOE propagation:
+  `vignette("methodology", package = "catchmentACS")`.
+- **Function reference** — the orchestrator, the isochrone builder, the ACS
+  prefetch, and the OSRM preflight probe: `?cacs_run`, `?cacs_isochrone`,
+  `?cacs_acs_prefetch`, and `?cacs_validate_osrm_endpoint`.
+
+Bug reports and feature requests:
+<https://github.com/joonho112/catchmentACS/issues>.

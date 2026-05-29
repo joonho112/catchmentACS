@@ -1,0 +1,60 @@
+Package: catchmentACS
+Title: Isochrone-Based Area-Weighted ACS Aggregation
+Version: 0.5.0
+Authors@R:
+    person("JoonHo", "Lee", , "jlee296@ua.edu", role = c("aut", "cre", "cph"),
+           comment = c(ORCID = "0009-0006-4019-8703"))
+Description: Generates drive-time isochrones from arbitrary lat/lng points
+    and aggregates American Community Survey (ACS) tract-level estimates to
+    those isochrones via area-weighted intersection. The current beta supports
+    OSRM and OpenRouteService routing providers; Mapbox, r5r, and population
+    weighting are reserved fail-loud surfaces for future releases. Includes
+    demo-safe OSRM defaults, condition capture with return values,
+    drive-time-aware per-site rate summaries, fingerprint-protected persistent
+    cache entries, corrected ACS rate derivation including
+    ssi_rate = B19056_002 / B19056_001, validation, cache, provenance
+    description, and leaflet visual walkthrough helpers for auditable Pre-K
+    catchment analysis.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Language: en-US
+LazyData: true
+Depends:
+    R (>= 4.1.0)
+Imports:
+    cli,
+    digest,
+    dplyr,
+    httr2,
+    jsonlite,
+    memoise,
+    rappdirs,
+    rlang,
+    sf (>= 1.0-12),
+    tibble,
+    tidycensus (>= 1.6),
+    tidyr,
+    tigris
+Suggests:
+    classInt,
+    covr,
+    htmltools,
+    httptest2,
+    knitr,
+    leaflet,
+    lintr,
+    mapboxapi,
+    openrouteservice,
+    osrm (>= 4.0),
+    pkgdown,
+    quarto,
+    r5r,
+    roxygen2,
+    testthat (>= 3.0.0),
+    withr
+VignetteBuilder: quarto
+Config/testthat/edition: 3
+URL: https://github.com/joonho112/catchmentACS, https://joonho112.github.io/catchmentACS
+BugReports: https://github.com/joonho112/catchmentACS/issues
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.0.0

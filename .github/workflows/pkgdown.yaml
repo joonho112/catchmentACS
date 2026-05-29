@@ -1,0 +1,84 @@
+# Workflow: pkgdown
+#
+# Builds the pkgdown documentation site and deploys it to the gh-pages branch
+# on every push to main/master (and on published releases or manual dispatch).
+# Added during the pre-publication documentation overhaul. Mirrors the
+# r-lib/actions pkgdown example and the house style of R-CMD-check.yaml
+# (checkout@v4, setup-pandoc@v2, setup-r@v2 with use-public-rspm,
+# setup-r-dependencies@v2, _R_CHECK_FORCE_SUGGESTS_: false).
+#
+# Two package-specific additions over the stock r-lib template:
+#   1. Quarto setup -- this package's VignetteBuilder is quarto, so the .qmd
+#      articles cannot render without quarto present on the runner.
+#   2. "Fix favicon MIME type" -- pkgdown 2.2.0's Bootstrap-5 template emits the
+#      favicon <link> type attribute wrapped in curly/smart quotes
+#      (type="<curly>image/svg+xml<curly>"), which is invalid. A fresh CI build
+#      re-creates this defect, so we rewrite it to straight quotes across
+#      docs/**/*.html after the build and before deploy, with a guard that fails
+#      the job if any curly-quoted occurrence survives. Remove once pkgdown ships
+#      a fix upstream.
+#
+# IMPORTANT: this is the ONE pkgdown workflow for the repo. Do NOT also run
+# usethis::use_pkgdown_github_pages() -- it would add a second, unpatched
+# pkgdown workflow. To create the orphan gh-pages branch and point GitHub Pages
+# at it, run usethis::use_github_pages() once, or set Settings -> Pages
+# (Source: Deploy from a branch -> gh-pages / root) manually after the first run.
+
+on:
+  push:
+    branches: [main, master]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+name: pkgdown
+
+permissions:
+  contents: write
+
+jobs:
+  pkgdown:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pkgdown-${{ github.event_name }}
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      _R_CHECK_FORCE_SUGGESTS_: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: quarto-dev/quarto-actions/setup@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::pkgdown, local::.
+          needs: website
+
+      - name: Build site
+        run: pkgdown::build_site_github_pages(new_process = FALSE, install = FALSE)
+        shell: Rscript {0}
+
+      # pkgdown 2.2.0 favicon MIME defect (see header). Rewrite curly quotes to
+      # straight quotes across all generated HTML, then fail if any survive.
+      - name: Fix favicon MIME type (pkgdown 2.2.0 smart-quote bug)
+        run: |
+          find docs -name "*.html" -exec perl -CSD -i -pe 's/\x{201d}image\/svg\+xml\x{201d}/image\/svg+xml/g' {} +
+          if grep -rlP '\x{201d}image/svg\+xml\x{201d}' docs --include="*.html"; then
+            echo "::error::curly-quote favicon type still present after patch"; exit 1
+          fi
+        shell: bash
+
+      - name: Deploy to GitHub pages
+        if: github.event_name != 'pull_request'
+        uses: JamesIves/github-pages-deploy-action@v4.5.0
+        with:
+          clean: false
+          branch: gh-pages
+          folder: docs

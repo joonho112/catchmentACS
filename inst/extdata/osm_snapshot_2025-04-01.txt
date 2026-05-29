@@ -1,0 +1,18 @@
+OSM Snapshot Provenance - catchmentACS legacy_2025 regression fixture
+
+snapshot_date:     2025-04-01
+provider:          OSRM 5.27.1 (public demo server)
+server_url:        https://router.project-osrm.org/
+retrieval_dates:   2025-05-24 (per baseline script timestamp)
+profile:           car
+region_bbox:       AL (lon -88.5 to -84.9, lat 30.2 to 35.0)
+notes:             Public demo server; production should use
+                   self-hosted OSRM with pinned PBF.
+
+v0.1 alpha note:
+  The legacy_2025_isochrones.rds fixture is synthetic (buffered circles
+  at 1km/minute radius around each site, EPSG:5070 buffer reprojected to
+  EPSG:4326). This metadata describes the OSM snapshot that the v1.0
+  production regeneration would use; it is preserved here so the
+  regression-test provenance attribute carries a stable value through
+  v0.1 -> v0.2 -> v1.0 transitions.

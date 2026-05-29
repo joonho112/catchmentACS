@@ -1,0 +1,772 @@
+---
+title: "Derived rates: definitions and ratio MOEs"
+vignette: >
+  %\VignetteIndexEntry{Derived rates: definitions and ratio MOEs}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    fig-width: 7
+    fig-height: 5
+    fig-align: center
+    out-width: "85%"
+    html-math-method: katex
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+
+# Force network-free, deterministic builds: no provider/Census calls, no cache.
+old_options <- options(
+  catchmentACS.progress = "off",
+  catchmentACS.rate_first_default = FALSE
+)
+old_cache <- getOption("catchmentACS.cache_enabled", NULL)
+on.exit(options(old_options), add = TRUE)
+on.exit(options(catchmentACS.cache_enabled = old_cache), add = TRUE)
+cacs_set_cache(FALSE, scope = "session")
+```
+
+This article is the **method-track** companion to
+`vignette("methodology", package = "catchmentACS")` that fixes the *rates*
+layer of the estimator — the last of the three theory articles. The overview
+*states* that a derived rate is a ratio of two coverage-weighted totals and
+that some rates route to a tighter margin formula than others; this article
+makes the catalogue precise — the five sanctioned rates, their fixed ACS
+numerator and denominator codes, and the baseline policy that decides which
+margin-of-error (MOE) formula each one uses — and then does the thing the
+overview cannot: it **reproduces a derived rate and its full MOE routing by
+hand**, on a bundled fixture, so a methodologist can confirm that the rates the
+package reports are the ratios this page describes, computed by the formula this
+page assigns. The reference page `?cacs_derive_rates` is the implementation
+anchor; this article supplies the rate catalogue and the routing logic behind
+its "Rate definitions" and `formula_dispatch` sections.
+
+It is written for a methodologist or a reviewer who wants the rate model on the
+page: why a catchment rate is a *ratio of aggregates* rather than a weighted
+average of tract rates, which two of the five rates are eligible for the subset
+MOE formula and which three are not, why one rate whose numerator genuinely *is*
+a subset still routes to the conservative formula by policy, and exactly what
+the package records when the tighter formula is requested but its variance
+breaks down. We reuse the notation fixed in the overview without re-motivating
+it: the isochrone $I_s$, the tract $T_j$, the coverage weight $w^{cov}_{sj}$
+(the fraction of tract $T_j$'s area the catchment at site $s$ captured), and a
+rate's tract-level numerator and denominator counts $A_j, B_j$. The MOE algebra
+itself — the C1 subset formula, the C2 conservative formula, the
+$M = 1.645\,SE$ conversion, and the never-silent C1 → C2 fallback — is **not**
+re-derived here; it is the subject of
+`vignette("theory-moe-propagation", package = "catchmentACS")` and
+`?cacs_propagate_moe`, and this article *routes* rates into those formulas
+rather than restating them. The construction of $w^{cov}_{sj}$ is likewise
+derived in `vignette("theory-spatial-aggregation", package = "catchmentACS")`;
+this article takes both as given and concentrates on the rate definitions and
+the dispatch.
+
+::: {.callout-note}
+## About the data in this article
+
+Every executable cell here is built entirely from the package's bundled
+`inst/extdata` fixtures — the synthetic `legacy_2025_isochrones`,
+`legacy_2025_sites`, and `sample_alabama_subset` objects — so this article
+renders with **no** Census, OSRM, ORS, or other network calls. These fixtures
+preserve the production calling contract (sites, drive-time polygons,
+tract-level ACS variables) but are **synthetic and illustrative**: they are
+included only for examples, tests, and reproducible package checks. They are
+**not** live Alabama policy estimates and must not be cited as real ACS results.
+Any real analysis requires a fresh live run (see
+`vignette("providers", package = "catchmentACS")`).
+:::
+
+## A derived rate is a ratio of two coverage-weighted totals
+
+A derived rate is not aggregated the way a count is. It is a *ratio* of two
+quantities, each of which is itself a coverage-weighted catchment total. By the
+time `cacs_derive_rates()` runs, the spatial stage has already aggregated each
+ACS count to the catchment as a coverage-weighted total, and the MOE stage has
+attached a margin to each of those totals; a derived rate does **not** re-touch
+the geometry. It takes two of those already-aggregated totals — a numerator and
+a denominator — and divides. For a rate with tract-level numerator counts $A_j$
+and denominator counts $B_j$, the catchment rate at site $s$ is
+
+$$
+\widehat{R}_s
+= \frac{\displaystyle\sum_j w^{cov}_{sj}\, A_j}{\displaystyle\sum_j w^{cov}_{sj}\, B_j}
+= \frac{\widehat{A}_s}{\widehat{B}_s},
+\qquad
+\widehat{A}_s = \sum_j w^{cov}_{sj}\, A_j,
+\quad
+\widehat{B}_s = \sum_j w^{cov}_{sj}\, B_j,
+$$
+
+where $\widehat{A}_s$ and $\widehat{B}_s$ are exactly the Family-A spatial
+totals of the numerator and denominator ACS cells, each carrying the coverage
+weight $w^{cov}_{sj}$ derived in
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`. The rate
+inherits the *coverage* path because both of its ingredients are extensive
+counts: half a tract contributes half its poor persons **and** half its
+population, and the halves cancel in the ratio only when each is allocated by
+the same area fraction.
+
+The order of operations is the whole point, and it is the reason a rate is its
+own estimand family: the package **aggregates the numerator and the denominator
+separately, each as its own `spatial_total`, and only then divides**. It forms a
+ratio of two aggregates, $(\sum_j w^{cov}_{sj} A_j) / (\sum_j w^{cov}_{sj} B_j)$
+— it does **not** form a per-tract rate $A_j / B_j$ and average those,
+$\sum_j w_j (A_j / B_j)$. The two are not equal, and the ratio-of-aggregates
+form is the correct one: a tract that is barely clipped by the catchment should
+influence the catchment rate in proportion to how many of its people the
+catchment actually captures, which is what weighting the *counts* before
+dividing achieves. Averaging tract rates would instead give a sparsely-captured
+tract the same say as a fully-enclosed one, and would silently mis-estimate the
+catchment rate whenever the tracts differ in size or in their denominator.
+Aggregating two totals and dividing once is the areally correct estimator, and
+it is the same $\widehat{R}_s$ the overview lists for the `derived_rate` family.
+
+Mechanically, this means both totals must survive intact until the division. The
+upstream stages preserve them: `cacs_intersect_weight()` accumulates each ACS
+code's coverage-weighted total and its propagated variance into an attribute
+(the *aggregation carriers*), `cacs_propagate_moe()` carries that attribute
+forward while it computes per-variable margins, and `cacs_derive_rates()` reads
+the numerator total $\widehat{A}_s$ and denominator total $\widehat{B}_s$ back
+out of it, divides to get the point estimate, and routes the *pair* of totals
+(with their variances) into a ratio-MOE formula. Because $\widehat{A}_s$ and
+$\widehat{B}_s$ are each random estimates carrying their own propagated variance,
+the rate's MOE is a *ratio-variance* problem, and the package offers the two
+delta-method forms the Census Bureau's handbook gives — the subset form (C1) and
+the conservative general-ratio form (C2). Which form a given rate uses is the
+subject of the routing policy below; the algebra of both forms is derived in
+`vignette("theory-moe-propagation", package = "catchmentACS")`. The
+"preserve both totals, then divide" rule is what makes the rate's margin of
+error computable at all.
+
+## The five-rate catalogue
+
+The package computes exactly **five** curated rates. The set is fixed for this
+release: `cacs_derive_rates()` accepts the rate list only if it is *identical*
+to the sanctioned catalogue, and any addition, deletion, or code substitution
+aborts. The catalogue is surfaced publicly as the package object
+`cacs_acs_default_rates` (see `?cacs_acs_default_rates`) so the five
+`c(num, den)` pairs can be inspected without reaching into package internals.
+The motivation for the whitelist is reproducibility and auditability: a single
+frozen origin for every published rate, with the numerator/denominator pairing,
+the universe, and the subset relationship vetted once per rate rather than
+trusted from arbitrary user input. Arbitrary ratios are a separate, future
+surface (covered at the end of this article).
+
+We read the catalogue straight off the shipped object so the table below is the
+catalogue the code uses, not a transcription of it:
+
+```{r}
+#| label: catalogue-object
+#| eval: true
+
+# The catalogue is a public object; each entry is a c(num, den) ACS-code pair.
+cacs_acs_default_rates
+```
+
+Each rate divides one ACS table cell (the numerator) by another (the
+denominator). The denominator is the rate's **universe** — the population or
+household base the rate is "out of." Reading the universe column is the quickest
+way to see what a rate actually measures, because a rate is only interpretable
+relative to its base.
+
+| Rate name | Numerator code | Denominator code | What it measures | Universe (denominator) |
+|---|---|---|---|---|
+| `poverty_rate` | `B17001_002` | `B17001_001` | persons with income below the poverty level $\div$ persons for whom poverty status is determined | population for whom poverty status is determined (`B17001` total) |
+| `snap_rate` | `B22003_002` | `B22003_001` | households receiving SNAP / Food Stamps $\div$ all households | households (`B22003` total) |
+| `ssi_rate` | `B19056_002` | `B19056_001` | households with Supplemental Security Income $\div$ all households | households (`B19056` total-household universe) |
+| `unemp_rate` | `B23025_005` | `B23025_003` | unemployed persons in the civilian labor force $\div$ civilian labor force | civilian labor force (`B23025_003`) |
+| `labor_force_participation` | `B23025_002` | `B23025_001` | persons in the labor force $\div$ population 16 and over | population 16 years and over (`B23025_001`) |
+
+Two features of this table do all the work in the next section. First, the
+**universe** column is not decoration: it is the denominator's definition, and
+whether the numerator is a true subset *of that universe* is what determines MOE
+eligibility. Persons below poverty are a subset of the persons for whom poverty
+status is determined; persons in the labor force are a subset of the population
+16 and over. Second, two rates (`unemp_rate`, `labor_force_participation`) share
+the `B23025` employment-status table but divide by *different* cells: the
+unemployment rate is out of the **civilian labor force** (`B23025_003`), while
+labor-force participation is out of the whole **population 16 and over**
+(`B23025_001`). They are different rates with different universes, and — as the
+next section shows — they are routed to different MOE formulas under the per-rate
+dispatch.
+
+## Subset structure and MOE routing
+
+Every rate above is a ratio, so its margin of error is a *ratio* margin — and the
+MOE companion derives that there are two ratio-variance formulas, differing by a
+single sign. This is the section to read slowly, because it is where a rate's
+*definition* becomes a *formula choice*. We restate the two formulas only enough
+to name them as the routing target; the derivation, the guards, and the by-hand
+verification all live in
+`vignette("theory-moe-propagation", package = "catchmentACS")`.
+
+- **Family C1 — `proportion_subset`.** The Census Bureau's proportion formula,
+  which *subtracts* a cross term. It is valid **only when the numerator
+  $\widehat{A}_s$ is a true subset of the denominator $\widehat{B}_s$** (every
+  unit counted in the numerator is also counted in the denominator), because the
+  subtraction credits the positive correlation a subset relationship guarantees.
+  It is the **tighter** of the two estimates when it is valid; its fragility is
+  that the subtracted bracket can go negative.
+- **Family C2 — `general_ratio_conservative`.** The general-ratio formula, which
+  *adds* the same cross term. It is valid for any ratio, is **always
+  non-negative**, and is therefore the **conservative** (slightly wider)
+  estimate. It is the package default.
+
+### The subset relation versus the routing policy
+
+Whether a rate's numerator is a mathematical *subset* of its denominator is a
+fact about ACS table structure. Whether the package *routes* that rate to the
+tighter C1 formula is a separate **baseline policy** decision. The two are not
+the same, and conflating them is the error this section exists to prevent. The
+package records the policy as a per-rate C1-eligibility flag and a per-rate
+default formula. The public table below mirrors that locked routing policy
+without requiring users to reach into unexported package internals:
+
+```{r}
+#| label: routing-tables
+#| eval: true
+
+tibble::tibble(
+  rate = c(
+    "poverty_rate",
+    "snap_rate",
+    "ssi_rate",
+    "unemp_rate",
+    "labor_force_participation"
+  ),
+  c1_eligible = c(TRUE, FALSE, FALSE, FALSE, TRUE),
+  default_formula = c(
+    "proportion_subset",
+    "general_ratio_conservative",
+    "general_ratio_conservative",
+    "general_ratio_conservative",
+    "proportion_subset"
+  )
+)
+```
+
+Read the two columns together. The five rates fall into **three** routing
+classes, and it is worth naming each precisely because the middle one is easy to
+get wrong:
+
+**C1-eligible (the subset proportions): `poverty_rate` and
+`labor_force_participation`.** For both, the numerator is a textbook subset of
+the denominator's universe — poor persons within the poverty-status universe,
+labor force within the 16-and-over population. These are the only two rates the
+package will compute with the tighter Family C1 formula, and they are the two
+whose `auto` default formula is `proportion_subset`.
+
+**C2 by household structure: `snap_rate` and `ssi_rate`.** Both are household
+rates — households receiving a benefit divided by all households. The package
+does not assert a subset *proportion* relationship for them at this baseline, so
+they route to the conservative Family C2 formula. Their numerator is genuinely a
+subset of "all households," but the curated policy treats household-benefit rates
+as general ratios in this release; they are **C2 by policy**.
+
+**Subset numerator, but C2 by policy: `unemp_rate`.** This is the case to read
+carefully. The unemployment rate's numerator, the unemployed (`B23025_005`),
+genuinely **is** a subset of its denominator, the civilian labor force
+(`B23025_003`) — every unemployed person is in the labor force. The subset
+relation holds. It is therefore **not a "non-subset" rate** — calling it that
+would misstate the ACS table structure. The baseline policy for this release
+nonetheless routes `unemp_rate` to the **conservative** Family C2 formula rather
+than to C1. So `unemp_rate` sits deliberately in its own class: *its numerator is
+a subset, but its baseline MOE formula is the conservative general ratio.* The
+correct description is "subset, but C2 by baseline policy," **not** "non-subset."
+A future-release transition of this rate to C1 is one of the package's open
+questions, and the reference page flags it explicitly.
+
+### `formula_dispatch`: how the routing is selected
+
+`cacs_derive_rates()` takes a `formula_dispatch` argument that selects how the
+five rates are assigned to formulas. It has three modes:
+
+| `formula_dispatch` | Effect on the five rates |
+|---|---|
+| `"general_ratio_conservative"` *(default)* | Broadcast Family C2 to **every** rate, including the two C1-eligible ones. Under it, no rate uses the subtracting formula, so no rate can produce a negative subset variance, and every published margin is the always-defined conservative one — the most conservative, fully reproducible setting. |
+| `"proportion_subset"` | Request Family C1 for the rates that are C1-eligible (`poverty_rate`, `labor_force_participation`); the three non-eligible rates (`snap_rate`, `ssi_rate`, `unemp_rate`) are **downgraded to C2** by policy, not silently — the downgrade is recorded in the run's rate-provenance attribute. |
+| `"auto"` | Per-rate dispatch from the catalogue: C1 for the two eligible rates, C2 for the other three. The "use each rate's policy default" setting, and the mode that reproduces the catalogue's intended formula for each rate in a single call. |
+
+Note that `"proportion_subset"` and `"auto"` produce the *same* routing for the
+five curated rates, because the only rates `"proportion_subset"` upgrades to C1
+are exactly the two the catalogue already marks C1 — and the three non-eligible
+rates are pinned to C2 under both. The difference between the two modes is in
+their *intent* for a future open catalogue, not in their effect on this release's
+five rates.
+
+### The C1 → C2 fallback (routing's safety valve)
+
+The dispatch above decides what each rate *requests*. Requesting C1 for an
+eligible rate is a *request*, not a guarantee, and there is one more layer below
+it — the reason C1 is safe to request at all. The Family C1 bracket
+$\mathrm{Var}(A) - (A/B)^2\,\mathrm{Var}(B)$ can come out **negative** on real
+aggregated inputs, in which case its square root is undefined. When that happens,
+the package does not emit a missing value or a silent C1 number: it
+**recomputes that cell's margin with the always-non-negative Family C2 formula**
+and records the substitution on the row — `moe_formula_requested` stays
+`"proportion_subset"` (the request is preserved), `moe_formula_effective` becomes
+`"general_ratio_conservative"` (C2 produced the value), `moe_fallback` is set to
+`TRUE`, and `moe_fallback_reason` is `"negative_variance"`. The fallback is never
+silent, and a single end-of-run summary reports the counts.
+
+We do **not** re-derive that fallback here — its mechanics, the status-column
+contract, and the other degenerate outcomes (zero denominator, missing input
+margin) are derived and verified in
+`vignette("theory-moe-propagation", package = "catchmentACS")` and documented in
+`?cacs_propagate_moe`. What matters for *this* article is that the fallback is
+the reason a C1-eligible rate can still legitimately report a C2 margin: routing
+proposes C1, and the variance guard disposes. The numerical section below shows
+exactly this happening to one rate while a second C1-eligible rate stays on C1,
+in the same catchment.
+
+## SSI rate: the current definition
+
+The SSI rate deserves a one-line clarification because its universe is easy to
+misread. The current definition is
+
+$$
+\widehat{R}^{\text{ssi}}_s
+= \frac{\widehat{A}_s\,(\texttt{B19056\_002})}{\widehat{B}_s\,(\texttt{B19056\_001})},
+$$
+
+that is, **households with Supplemental Security Income (`B19056_002`) divided by
+the `B19056` total-household universe (`B19056_001`)**. The base is *households*,
+not persons and not households-with-some-other-income — it is the full household
+count of the `B19056` table. We surface it explicitly only because the `B19056`
+table also publishes person-level and income-bracket cells that a reader might
+reach for; the curated catalogue fixes the household-over-household pairing so
+the rate's universe is unambiguous. Because the numerator and denominator are
+household-defined cells rather than a person-level subset, the SSI rate routes to
+the conservative Family C2 formula by default (it is not C1-eligible). This is
+the definition the package computes for this release.
+
+## Bivariate tract exposure: `n_tracts_num` and `n_tracts_den`
+
+A `spatial_total` row carries an `n_tracts` count — the number of tracts that
+contributed to that one aggregation. A rate row cannot use that single slot
+honestly, because a rate is built from *two* aggregations whose tract sets need
+not match. The numerator and denominator of a curated rate come from different
+ACS table cells, and the Census Bureau suppresses cells independently: a
+catchment can have a valid numerator contribution from a tract that has a
+suppressed denominator there, or the reverse. So a rate row carries **two** counts
+instead of one, populated independently:
+
+- **`n_tracts_num`** — the number of tracts that contributed a valid count to the
+  rate's **numerator** total $\widehat{A}_s$.
+- **`n_tracts_den`** — the number of tracts that contributed a valid count to the
+  rate's **denominator** total $\widehat{B}_s$.
+
+These two counts are reported **separately** rather than collapsed to a single
+`min(num, den)` precisely so a reviewer can *see* an asymmetry directly. If
+`n_tracts_num` and `n_tracts_den` disagree for a rate, that is a visible signal
+that the numerator and denominator were aggregated over different tract sets —
+exactly the kind of suppression asymmetry that a collapsed count would hide.
+
+The `n_tracts` column itself is **`NA_integer_` on every rate row**. This is not
+a gap to be filled — it is the contract. `n_tracts` describes a single
+aggregation, and a rate is *derived* from two, not aggregated as one; the
+meaningful per-tract counts for a rate live in the two `_num` / `_den` slots, so
+the single slot is deliberately left empty. Symmetrically, every inherited
+**source-variable** row (the spatial totals and proxies passed through from the
+MOE stage) carries `n_tracts_num = NA_integer_` and `n_tracts_den = NA_integer_`,
+because those two columns are reserved for rates. In the carrier-missing edge case
+— when a rate's numerator or denominator carrier is absent for a cell — both
+`_num` and `_den` collapse to `NA_integer_` as well, and the diagnostic surface
+for that condition is the row's `failure_origin`, not the count columns. The full
+population contract is in the "Policy on n_tracts_num and n_tracts_den" section of
+`?cacs_derive_rates`.
+
+## Deferred: custom and multi-numerator rates
+
+The five-rate catalogue is intentionally closed for this release, and two
+extensions are explicitly reserved for a future (v1.1) surface rather than
+smuggled into the current one.
+
+- **Arbitrary user-supplied ratios** are reserved for a separate function,
+  `cacs_derive_rates_custom()`, that will accept user-defined numerator/
+  denominator pairs with an explicit per-rate formula assignment. Any ratio
+  outside the five sanctioned pairs is rejected at the argument boundary today;
+  keeping arbitrary ratios out of the curated path preserves the single-origin
+  audit trail, so every rate the current function emits is one of the five vetted
+  definitions.
+- **Multi-numerator rates** — rates whose numerator is a *sum* of several ACS
+  cells rather than a single cell — are also deferred. The canonical example is a
+  true child poverty rate, which must sum several age-by-sex cells of the
+  `B17001` table rather than divide a single cell. A single-cell shortcut for such
+  a rate is a silent statistical error, so it is excluded from the curated
+  catalogue rather than approximated.
+
+Both are noted here so a reader knows the current function's scope is the *exact*
+five-rate catalogue, and that the path for anything beyond it already has a
+reserved home. The catalogue object carries this stability promise in its own
+documentation: see `?cacs_acs_default_rates`.
+
+## Numerical verification: the rates match the package
+
+This is the section that earns a methodologist's trust. We compute the five rates
+with the *real* pipeline on a bundled fixture, offline, and then do four things
+the prose above only asserts. We **reproduce a C2 rate and its margin by hand**
+and assert equality with the package to machine precision. We **reproduce a
+C1-eligible rate whose subset formula succeeds**, confirm its margin is the
+tighter subset value (not the conservative one), and match it by hand. On the
+same catchment we watch a **second C1-eligible rate fall back to C2** because its
+subset variance goes negative, and reproduce *that* margin by hand too. And we
+print the **`moe_formula_effective` for all five rates** so the C1-vs-C2 routing
+is visible in one table. Finally we force the **carrier-missing** branch and show
+it surfaces as `failure_origin = "carrier"`, distinct from any MOE fallback. If
+the catalogue or the routing on this page were not the ones the code runs, one of
+these checks would fail.
+
+We build the catchment from the fixtures with `cacs_intersect_weight()`, then run
+`cacs_propagate_moe()` and `cacs_derive_rates()` — the exact pipeline path of a
+real run, on frozen inputs. We use the synthetic site `AL_SITE_03` at a 15-minute
+drive time, whose catchment intersects three tracts, because it happens to
+exercise all three routing outcomes at once:
+
+```{r}
+#| label: vf-pipeline
+#| eval: true
+
+# These fixtures are exactly the shapes pipeline stages 1-2 would have returned.
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_03"
+drive_time <- 15L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+# keep_tract_audit preserves the per-tract carriers we recompute the rate from.
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  keep_tract_audit = TRUE,
+  verbose          = FALSE
+)
+propagated <- cacs_propagate_moe(weighted, verbose = FALSE)
+
+# formula_dispatch = "auto" routes each rate to its catalogue default (C1 for
+# the two eligible rates, C2 for the other three).
+rates <- suppressWarnings(
+  cacs_derive_rates(propagated, formula_dispatch = "auto", verbose = FALSE)
+)
+```
+
+The numerator and denominator totals the rate divides are the *aggregation
+carriers* — the Family-A coverage totals $\widehat{A}_s$, $\widehat{B}_s$ and
+their accumulated variances that `cacs_intersect_weight()` preserves as an
+attribute for exactly this purpose. We pull them so the by-hand checks read from
+the same numbers the package divides:
+
+```{r}
+#| label: vf-carriers
+#| eval: true
+
+z    <- 1.645
+carr <- attr(weighted, "cacs_aggregation_carriers")
+
+# A tiny accessor: the coverage total and its accumulated variance for one cell.
+get <- function(code, col) carr[[col]][carr$variable == code]
+
+carr |>
+  filter(variable %in% c(
+    "B22003_002", "B22003_001",   # snap_rate  num / den
+    "B23025_002", "B23025_001",   # labor_force_participation num / den
+    "B17001_002", "B17001_001"    # poverty_rate num / den
+  )) |>
+  select(variable, est_total, var_total_raw, weight_sum, n_tracts)
+```
+
+### Check 1 — a C2 rate by hand (`snap_rate`)
+
+`snap_rate` is a household-benefit ratio, so it routes to Family C2 under every
+dispatch mode. Its point estimate is the ratio of the two coverage totals
+$\widehat{R}_s = \widehat{A}_s / \widehat{B}_s$, and its margin is the C2 ratio
+form, recovered from the carriers' accumulated variances
+$\mathrm{Var}(A) = (M_A/z)^2$ and $\mathrm{Var}(B) = (M_B/z)^2$ as
+$M = z\sqrt{\mathrm{Var}(A) + (A/B)^2\,\mathrm{Var}(B)}\,/\,|B|$:
+
+```{r}
+#| label: vf-c2-hand
+#| eval: true
+
+A_snap    <- get("B22003_002", "est_total")
+B_snap    <- get("B22003_001", "est_total")
+VarA_snap <- get("B22003_002", "var_total_raw")
+VarB_snap <- get("B22003_001", "var_total_raw")
+
+p_snap        <- A_snap / B_snap                                     # the ratio A / B
+hand_est_snap <- p_snap
+hand_moe_snap <- z * sqrt(VarA_snap + p_snap^2 * VarB_snap) / abs(B_snap)
+
+pkg_snap <- rates |>
+  filter(variable == "snap_rate") |>
+  select(estimate, moe, moe_formula_effective, moe_fallback)
+
+list(
+  A = A_snap, B = B_snap,
+  hand_estimate = hand_est_snap,
+  hand_moe_C2   = hand_moe_snap,
+  pkg           = pkg_snap
+)
+```
+
+Both reproduce exactly. The package routed `snap_rate` through
+`moe_formula_effective = "general_ratio_conservative"` with no fallback; its
+reported estimate (about `0.2506`) is the by-hand ratio $A/B$, and its reported
+margin (about `0.0345`) is the by-hand C2 root:
+
+```{r}
+#| label: vf-c2-assert
+#| eval: true
+
+c(
+  estimate_match = isTRUE(all.equal(hand_est_snap, pkg_snap$estimate)),
+  moe_match      = isTRUE(all.equal(hand_moe_snap, pkg_snap$moe)),
+  moe_abs_diff   = abs(hand_moe_snap - pkg_snap$moe)
+)
+```
+
+The rate on this page and the rate in the code are the same arithmetic.
+
+### Check 2 — a C1-eligible rate whose subset formula succeeds (`labor_force_participation`)
+
+`labor_force_participation` is C1-eligible (labor force $\subseteq$ population
+16+), so under `auto` it is computed with the **tighter** Family C1 formula
+$M = z\sqrt{\mathrm{Var}(A) - (A/B)^2\,\mathrm{Var}(B)}\,/\,|B|$ — *provided the
+bracket stays non-negative.* We compute the bracket by hand, confirm it is
+positive, and form the C1 margin:
+
+```{r}
+#| label: vf-c1-hand
+#| eval: true
+
+A_lfp    <- get("B23025_002", "est_total")
+B_lfp    <- get("B23025_001", "est_total")
+VarA_lfp <- get("B23025_002", "var_total_raw")
+VarB_lfp <- get("B23025_001", "var_total_raw")
+
+p_lfp       <- A_lfp / B_lfp
+inside_C1   <- VarA_lfp - p_lfp^2 * VarB_lfp           # C1 bracket; must be >= 0
+hand_moe_C1 <- z * sqrt(inside_C1) / abs(B_lfp)
+hand_moe_C2 <- z * sqrt(VarA_lfp + p_lfp^2 * VarB_lfp) / abs(B_lfp)  # for contrast
+
+list(
+  C1_inside_bracket = inside_C1,          # > 0, so C1 is admissible
+  hand_moe_C1       = hand_moe_C1,
+  hand_moe_C2       = hand_moe_C2          # the wider value C1 avoids
+)
+```
+
+The bracket is positive, so C1 is admissible, and the C1 margin (about `0.0240`)
+is markedly **tighter** than the conservative C2 value (about `0.0739`) on the
+identical inputs — that gap is exactly the cross term C1 credits and C2 does not.
+The package agrees, and reports `proportion_subset` with no fallback:
+
+```{r}
+#| label: vf-c1-assert
+#| eval: true
+
+pkg_lfp <- rates |>
+  filter(variable == "labor_force_participation") |>
+  select(estimate, moe, moe_formula_effective, moe_fallback, moe_fallback_reason)
+
+pkg_lfp
+
+c(
+  moe_match   = isTRUE(all.equal(hand_moe_C1, pkg_lfp$moe)),
+  is_C1       = pkg_lfp$moe_formula_effective == "proportion_subset",
+  no_fallback = isTRUE(!pkg_lfp$moe_fallback)
+)
+```
+
+The package's margin equals the hand-computed **subset** root, its effective
+formula is `proportion_subset`, and it did not fall back. The tighter formula was
+requested, was admissible, and was used.
+
+### Check 3 — a C1-eligible rate that falls back to C2 (`poverty_rate`)
+
+On this *same* catchment, the other C1-eligible rate behaves differently, and
+that is the point of choosing it. `poverty_rate`'s numerator is *persons in
+poverty* (`B17001_002`) and its denominator is *persons for whom poverty status
+is determined* (`B17001_001`); the numerator is a true subset of the denominator,
+so it is also requested as `proportion_subset` under `auto`. But its C1 bracket
+comes out **negative**, so the subset formula is inadmissible and the package
+falls back to C2:
+
+```{r}
+#| label: vf-fallback-hand
+#| eval: true
+
+A_pov    <- get("B17001_002", "est_total")
+B_pov    <- get("B17001_001", "est_total")
+VarA_pov <- get("B17001_002", "var_total_raw")
+VarB_pov <- get("B17001_001", "var_total_raw")
+
+p_pov       <- A_pov / B_pov
+inside_C1   <- VarA_pov - p_pov^2 * VarB_pov           # C1 bracket; < 0 here
+hand_moe_C2 <- z * sqrt(VarA_pov + p_pov^2 * VarB_pov) / abs(B_pov)
+
+list(
+  C1_inside_bracket = inside_C1,    # < 0, so C1 is inadmissible -> fall back
+  hand_moe_C2       = hand_moe_C2   # the value the fallback should report
+)
+```
+
+The bracket is negative, so C1 cannot produce a real margin and the routing's
+safety valve fires. The package records the substitution exactly as the
+never-silent contract requires, and the reported margin is the **C2** root, not a
+missing value:
+
+```{r}
+#| label: vf-fallback-assert
+#| eval: true
+
+pkg_pov <- rates |>
+  filter(variable == "poverty_rate") |>
+  select(estimate, moe,
+         moe_formula_requested, moe_formula_effective,
+         moe_fallback, moe_fallback_reason)
+
+pkg_pov
+
+c(
+  moe_match        = isTRUE(all.equal(hand_moe_C2, pkg_pov$moe)),
+  requested_is_C1  = pkg_pov$moe_formula_requested == "proportion_subset",
+  effective_is_C2  = pkg_pov$moe_formula_effective == "general_ratio_conservative",
+  fallback_flagged = isTRUE(pkg_pov$moe_fallback),
+  reason_recorded  = pkg_pov$moe_fallback_reason == "negative_variance"
+)
+```
+
+Every flag lands: the row asked for `proportion_subset`, its subset variance went
+negative, and the conservative formula produced the value, with
+`moe_fallback = TRUE` and `moe_fallback_reason = "negative_variance"` recorded so
+the path is auditable. The fallback margin reproduces the hand-computed C2 root
+exactly. Two C1-eligible rates, the same catchment, opposite outcomes — and both
+fully recorded.
+
+### The routing made visible: `moe_formula_effective` across all five rates
+
+Finally, the single table the whole routing section describes — every rate, its
+requested formula, the formula whose value was actually written, and the
+bivariate tract exposure on each rate row:
+
+```{r}
+#| label: vf-routing-table
+#| eval: true
+
+rates |>
+  filter(estimand_family == "derived_rate") |>
+  select(variable, estimate, moe,
+         moe_formula_requested, moe_formula_effective,
+         moe_fallback, moe_fallback_reason,
+         n_tracts, n_tracts_num, n_tracts_den)
+```
+
+Read the `moe_formula_effective` column straight down. `snap_rate`, `ssi_rate`,
+and `unemp_rate` are `general_ratio_conservative` — the three C2 rates, exactly as
+the policy assigns (`unemp_rate` among them, its subset numerator
+notwithstanding). `labor_force_participation` is `proportion_subset` — a
+C1-eligible rate whose subset formula was admissible. And `poverty_rate` reads
+`general_ratio_conservative` with `moe_fallback = TRUE` — a C1-eligible rate that
+fell back. The bivariate exposure is visible too: every rate row carries
+`n_tracts = NA` while `n_tracts_num` and `n_tracts_den` hold the per-side tract
+counts.
+
+### Carrier-missing routing
+
+One last routing outcome is not a formula choice at all: a rate whose numerator
+or denominator **carrier is absent** for a cell cannot be computed, and the
+package records that as an *upstream carrier failure*, distinct from any MOE
+fallback. The default ACS catalogue supplies every carrier the five rates need,
+so this arises only in direct pipelines that drop a variable. We force it by
+removing the SSI numerator cell `B19056_002` from the ACS extract and rerunning:
+
+```{r}
+#| label: vf-carrier-missing
+#| eval: true
+
+acs_drop <- acs[sf::st_drop_geometry(acs)$variable != "B19056_002", ]
+
+weighted_d   <- cacs_intersect_weight(
+  iso_sf = iso_one, acs_sf = acs_drop,
+  weight_method = "area", verbose = FALSE
+)
+propagated_d <- cacs_propagate_moe(weighted_d, verbose = FALSE)
+rates_d      <- suppressWarnings(cacs_derive_rates(propagated_d, verbose = FALSE))
+
+rates_d |>
+  filter(estimand_family == "derived_rate") |>
+  select(variable, estimate, moe,
+         moe_fallback_reason, failure_origin, n_tracts_num, n_tracts_den)
+```
+
+`ssi_rate` now reports `estimate = NA`, `moe = NA`, `failure_origin = "carrier"`,
+and both `n_tracts_num` and `n_tracts_den` collapse to `NA` — while the other four
+rates compute normally. Critically, its `moe_fallback_reason` stays `"n/a"`, not a
+fallback reason: a missing carrier is an upstream failure surfaced through
+`failure_origin`, **not** an MOE-formula fallback. The two diagnostic surfaces
+stay distinct, exactly as the schema promises.
+
+To summarize the check: a C2 rate (`snap_rate`) and its conservative margin
+reproduce by hand to the floating-point floor; a C1-eligible rate
+(`labor_force_participation`) reports the *tighter* subset margin, also matched by
+hand, and is recorded as `proportion_subset` with no fallback; a second
+C1-eligible rate (`poverty_rate`) on the same catchment falls back to C2 because
+its subset variance goes negative, with the substitution recorded as
+`moe_formula_effective = "general_ratio_conservative"`, `moe_fallback = TRUE`, and
+`moe_fallback_reason = "negative_variance"`, its margin again matched by hand; the
+`moe_formula_effective` column makes the C1-vs-C2 routing of all five rates
+visible at once; and a dropped carrier surfaces as `failure_origin = "carrier"`
+rather than an MOE fallback. The catalogue and the routing on this page are the
+catalogue and the routing the code runs.
+
+## Where this sits
+
+This article fixed the rate catalogue and routed each rate into the MOE
+machinery. Its companions cover the geometry and the uncertainty algebra it
+depends on, and the overview ties all three together; each reuses the notation
+fixed in the overview.
+
+- **The estimator overview**, with the shared notation, the six-family table that
+  lists the `derived_rate` form, and the place of derived rates in the pipeline:
+  `vignette("methodology", package = "catchmentACS")`.
+- **Spatial aggregation** — how the coverage weight $w^{cov}_{sj}$ is built and
+  how each of a rate's two totals $\widehat{A}_s$, $\widehat{B}_s$ is aggregated
+  as a `spatial_total`:
+  `vignette("theory-spatial-aggregation", package = "catchmentACS")`.
+- **MOE propagation** — the derivation of the two ratio-variance formulas (the
+  subtracting C1 and the adding C2), the SE ↔ MOE relation, the numerical guards,
+  and the never-silent C1 → C2 negative-variance fallback this article routes
+  rates into: `vignette("theory-moe-propagation", package = "catchmentACS")` and
+  `?cacs_propagate_moe`.
+- **Function reference** — the `formula_dispatch` modes, the per-rate downgrade
+  recording, the `n_tracts_num` / `n_tracts_den` contract, and the
+  carrier-missing behavior are documented in `?cacs_derive_rates`; the frozen
+  five-rate catalogue object and its stability promise are in
+  `?cacs_acs_default_rates`.
+
+For the applied, run-it path that produces reporting tables with these rates and
+their margins of error from the same fixtures, see
+`vignette("getting-started", package = "catchmentACS")` and
+`vignette("alabama-tutorial", package = "catchmentACS")`.

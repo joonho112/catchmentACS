@@ -1,0 +1,10 @@
+# lintr config — catchmentACS
+#
+# DCF format (one logical record per file). Matches §16.4 testthat 3rd
+# edition idioms and the §44.5 sub-task (c) goodpractice baseline:
+#   - line length capped at 100 chars (roxygen + cli message friendly)
+#   - commented_code_linter disabled (we keep illustrative example
+#     snippets inside roxygen `@examples` and inline pseudocode blocks)
+linters: linters_with_defaults(line_length_linter(100), commented_code_linter = NULL)
+encoding: "UTF-8"
+exclusions: list("R/RcppExports.R", "tests/testthat/_httptest2", "inst/testdata", "inst/extdata", "data-raw", "doc", "vignettes/getting-started.html", "vignettes/getting-started_files")

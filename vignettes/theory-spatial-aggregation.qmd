@@ -1,0 +1,652 @@
+---
+title: "Spatial aggregation: area-weighted estimation"
+vignette: >
+  %\VignetteIndexEntry{Spatial aggregation: area-weighted estimation}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    fig-width: 7
+    fig-height: 5
+    fig-align: center
+    out-width: "85%"
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+
+# Force network-free, deterministic builds: no provider/Census calls, no cache.
+old_options <- options(
+  catchmentACS.progress = "off",
+  catchmentACS.rate_first_default = FALSE
+)
+old_cache <- getOption("catchmentACS.cache_enabled", NULL)
+on.exit(options(old_options), add = TRUE)
+on.exit(options(catchmentACS.cache_enabled = old_cache), add = TRUE)
+cacs_set_cache(FALSE, scope = "session")
+```
+
+This article is a **method-track** companion to
+`vignette("methodology", package = "catchmentACS")`. The overview frames the
+whole pipeline as one estimator and *states* that a count and an average are
+aggregated by two different weights; this article *derives* that result and then
+does something the overview cannot — it **reproduces the package's arithmetic by
+hand**, on a bundled fixture, so a methodologist can confirm that the formulas on
+this page are the formulas the code runs. It is written for a reader who wants
+the areal-interpolation model on the page: the uniform-within-tract assumption
+stated precisely, the coverage weight and the normalized mean weight built from
+first principles, the six estimand families laid out with the exact aggregation
+formula and the weight each one uses, and a numerical check that earns trust in
+the implementation. The reference page `?cacs_intersect_weight` is the
+implementation anchor; this article supplies the mathematics behind its
+"Estimand families and weights" section.
+
+We reuse the notation fixed in the overview without redefining its motivation:
+the isochrone $I_s$, the tract $T_j$, the intersection $I_s \cap T_j$, the
+equal-area measure $\lvert\,\cdot\,\rvert$, a count estimate $Y_j$, a scalar
+estimate $X_j$, and a rate's numerator and denominator counts $A_j, B_j$. The
+two weights $w^{cov}_{sj}$ and $w^{mean}_{sj}$ and the three estimator forms
+$\widehat{Y}_s$, $\widehat{\bar X}_s$, $\widehat{R}_s$ are restated where they
+are derived. The margin-of-error algebra is **not** developed here — it is the
+subject of `vignette("theory-moe-propagation", package = "catchmentACS")`.
+
+::: {.callout-note}
+## About the data in this article
+
+The single numerical check below is built entirely from the package's bundled
+`inst/extdata` fixtures — the synthetic `legacy_2025_isochrones`,
+`legacy_2025_sites`, and `sample_alabama_subset` objects — so this article
+renders with **no** Census, OSRM, ORS, or other network calls. These fixtures
+preserve the production calling contract (sites, drive-time polygons,
+tract-level ACS variables) but are **synthetic and illustrative**: they are
+included only for examples, tests, and reproducible package checks. They are
+**not** live Alabama policy estimates and must not be cited as real ACS
+results. Any real analysis requires a fresh live run (see
+`vignette("providers", package = "catchmentACS")`).
+:::
+
+## The areal-interpolation model
+
+The estimand is a neighborhood characteristic of the population that lives inside
+a drive-time catchment $I_s$: the count of people in poverty within a 10-minute
+drive of a site, the per-capita income of that catchment, its SNAP rate. The ACS
+publishes its estimates on census tracts $T_j$, whose boundaries were drawn for
+enumeration, not for travel time. A drive-time area slices straight through tract
+edges, capturing some tracts whole and others only in part — a sliver of one, half
+of another, the whole of a third. Areal interpolation is the model that
+re-expresses a tract-level published value as a catchment-level value across that
+misalignment.
+
+The model rests on a single assumption.
+
+> **Uniform-within-tract assumption.** The characteristic of interest is spread
+> *uniformly* over the area of each tract $T_j$. A catchment covering 40% of a
+> tract's area contains 40% of whatever the tract counts.
+
+Stated as a density, let $\rho_j$ be the quantity of the characteristic per unit
+area in tract $T_j$. Uniformity means $\rho_j$ is constant across $T_j$, so the
+amount of the characteristic contained in any sub-region $S \subseteq T_j$ is
+proportional to that sub-region's area,
+
+$$
+\text{amount in } S = \rho_j \, \lvert S \rvert
+= \big(\text{tract amount}\big)\cdot\frac{\lvert S \rvert}{\lvert T_j \rvert}.
+$$
+
+Taking $S = I_s \cap T_j$ gives the amount of the characteristic the catchment
+captures from tract $j$: the tract's published amount, scaled by the fraction of
+the tract's area inside the catchment. That fraction is the coverage weight of
+the next section, and the whole estimator is built from this one identity.
+
+The assumption's reach depends on the *type* of variable, and the distinction is
+the hinge of everything that follows.
+
+- An **extensive** (count) variable, $Y_j$ — persons, households, persons in
+  poverty — is an *amount* that lives in the tract. Under uniformity it splits in
+  proportion to area: half the tract's area carries half its people. The model is
+  *exact for area* and *approximate for the count*, the approximation being only
+  as good as the uniformity of the underlying density.
+- An **intensive** (scalar) variable, $X_j$ — a median, a per-capita figure, a
+  rate expressed as a level — is a *per-unit* quantity, not an amount. It does not
+  accumulate over area: half a tract does not hold "half a dollar of per-capita
+  income." Splitting an intensive value by area is meaningless. What the model can
+  do for an intensive variable is treat its tract value as the local level of a
+  field and form an area-weighted *average* of the tract values the catchment
+  overlaps — a blend, not a sum.
+
+This is exactly why one weight cannot serve both. **Extensive variables are
+summed with a weight that allocates a fraction of each tract amount; intensive
+variables are averaged with a weight that is a share and sums to one.** The
+package encodes this split as a variable's *estimand family*; the two weights are
+the two ways the same intersection area enters an aggregate.
+
+**When the assumption fails.** It is most strained where population is
+concentrated on a small part of a large tract. Suppose 80% of a tract's *area*
+is uninhabited woodland and its residents are packed into the remaining 20%. A
+catchment that clips only the woodland edge gets a coverage weight near $0.8$,
+and area weighting then credits the catchment with ~80% of the tract's
+population — when the truth is closer to 0%. The error is largest where land use
+is most heterogeneous within a tract: the urban–rural fringe, coastlines, large
+rural tracts straddling a town and its hinterland. The reserved
+`weight_method = "population"` mode is designed to relax exactly this assumption
+by substituting an ancillary population surface for area as the allocation basis
+(a *dasymetric* refinement); in the current release area is the only basis, and
+the assumption is stated plainly rather than hidden. Everything below concerns the
+implemented area path, whose honest caveat is this paragraph.
+
+## Coverage weight versus normalized mean weight
+
+Both weights are built from the same ingredient, the intersection area
+$\lvert I_s \cap T_j \rvert$. They differ only in what they divide it by, and that
+single difference is the difference between a total and an average.
+
+**The coverage weight.** From the areal-interpolation identity, the share of
+tract $j$'s amount that the catchment captures is the fraction of the tract's area
+inside the catchment,
+
+$$
+w^{cov}_{sj} = \frac{\lvert I_s \cap T_j \rvert}{\lvert T_j \rvert}
+\;\in\; [0, 1].
+$$
+
+It is bounded by one tract at a time: $w^{cov}_{sj} = 1$ when $T_j \subseteq I_s$
+(the tract is wholly inside the catchment) and $w^{cov}_{sj} = 0$ when the two are
+disjoint. Crucially, the coverage weights of the tracts a catchment touches do
+**not** sum to one. Summing over $j$,
+
+$$
+\sum_j w^{cov}_{sj}
+= \sum_j \frac{\lvert I_s \cap T_j \rvert}{\lvert T_j \rvert}
+\;\neq\; 1
+$$
+
+in general, because each term divides by a *different* tract area $\lvert T_j
+\rvert$. Its value is interpretable: it is the *effective number of
+tract-equivalents* the catchment covers. A catchment that wholly contained two
+tracts and half of a third would have $\sum_j w^{cov}_{sj} = 2.5$; three tracts
+each half-covered would sum to about $1.5$. Because the catchment area
+$\lvert I_s \rvert$ equals $\sum_j \lvert I_s \cap T_j \rvert$ when $I_s$ lies
+entirely within the tract layer, the coverage sum is the catchment's area
+re-expressed in units of "average tract," not a probability that must normalize.
+The package surfaces this sum directly as the `weight_sum` column, and a value
+near a small integer means the catchment captured roughly that many whole tracts.
+
+**The normalized mean weight.** An intensive variable needs a *share*: each tract
+should contribute to the catchment average in proportion to how much of the
+catchment it accounts for, with the contributions summing to one. Dividing the
+intersection area by the *total* intersection area over the catchment gives
+
+$$
+w^{mean}_{sj}
+= \frac{\lvert I_s \cap T_j \rvert}{\sum_k \lvert I_s \cap T_k \rvert},
+$$
+
+and this is normalized by construction,
+
+$$
+\sum_j w^{mean}_{sj}
+= \frac{\sum_j \lvert I_s \cap T_j \rvert}{\sum_k \lvert I_s \cap T_k \rvert}
+= 1,
+$$
+
+because the numerator summed over $j$ is exactly the denominator. The sum-to-one
+property is structural, not coincidental. The two weights are proportional within
+a catchment — $w^{mean}_{sj} \propto w^{cov}_{sj}\, \lvert T_j \rvert$ — but they
+are renormalized against different denominators, and that is what separates a
+quantity that *scales with the catchment* from one that *stays on the per-unit
+scale of the variable*.
+
+**Why the families split this way.** Put the two estimators side by side.
+
+- A **count** is a sum of amounts, so it is aggregated with the coverage weight:
+
+  $$
+  \widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j .
+  $$
+
+  If the catchment captures more area it captures more people, and $\widehat{Y}_s$
+  grows accordingly. Using a normalized weight here would force the answer to a
+  per-tract average and destroy the dependence on catchment size — a silent error.
+
+- A **scalar** is a per-unit level, so it is aggregated with the normalized mean
+  weight as a convex combination of the tract values:
+
+  $$
+  \widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j ,
+  \qquad \sum_j w^{mean}_{sj} = 1 .
+  $$
+
+  Because the weights sum to one and are non-negative, $\widehat{\bar X}_s$ lies
+  between $\min_j X_j$ and $\max_j X_j$: a catchment average per-capita income
+  cannot exceed every tract's per-capita income. Using the coverage weight here
+  would let an intensive value accumulate past any tract's level — again a silent
+  error, not a runtime failure.
+
+- A **derived rate** is a ratio of two extensive quantities. Each of the
+  numerator and denominator is aggregated as its own coverage-weighted total, and
+  the ratio is formed last:
+
+  $$
+  \widehat{R}_s
+  = \frac{\sum_j w^{cov}_{sj}\, A_j}{\sum_j w^{cov}_{sj}\, B_j} .
+  $$
+
+  The rate inherits the coverage path because both of its parts are counts; it is
+  not a weighted average of tract rates, which would weight a tiny-denominator
+  tract the same as a large one.
+
+**Neither misuse raises a warning.** Apply the coverage weight to an intensive
+variable and you sum quantities that should average, producing a dollar figure
+inflated past any tract's value — an income no one earns. Apply the mean weight to
+a count and you average quantities that should accumulate, producing a
+per-tract-ish number disconnected from how many people the catchment actually
+contains. The arithmetic runs; it just estimates the wrong thing. This is the
+silent estimand error the family classifier exists to prevent, and the reason the
+package refuses to apply one universal weight to every variable.
+
+The numerical check at the end of this article exhibits both sums on real
+fixture geometry: $\sum_j w^{cov}_{sj}$ coming out to a non-integer, and
+$\sum_j w^{mean}_{sj}$ coming out to exactly one.
+
+## The six estimand families
+
+A variable's *estimand family* is the rule that selects its weight and its
+aggregation formula. The package classifies every requested ACS variable into one
+of six families up front, then dispatches the matching arithmetic, so applying the
+wrong weight to a variable cannot happen quietly. The table gives the point
+estimate and the weight for each; the margin-of-error column is deliberately
+omitted, as the MOE formulas are derived in the companion article.
+
+| Estimand family | Representative variable | Point-estimate aggregation | Weight |
+|---|---|---|---|
+| `spatial_total` | total population; persons in poverty (`B17001_002`) | $\widehat{Y}_s = \sum_j w^{cov}_{sj} Y_j$ | coverage $w^{cov}_{sj}$ |
+| `derived_rate` | poverty rate; SNAP rate | $\widehat{R}_s = \dfrac{\sum_j w^{cov}_{sj} A_j}{\sum_j w^{cov}_{sj} B_j}$ | coverage, numerator and denominator separately |
+| `area_weighted_scalar_proxy` | per-capita income (`B19301_001`) | $\widehat{\bar X}_s = \sum_j w^{mean}_{sj} X_j$ | normalized mean $w^{mean}_{sj}$ |
+| `population_weighted_scalar_proxy` *(reserved)* | scalar proxy under population weighting | $\widehat{\bar X}_s = \sum_j w^{mean}_{sj} X_j$ | population-normalized mean |
+| `median_proxy` | tract median household income (`B19013_001`) | weighted blend of tract medians, **not** the true catchment median | normalized mean $w^{mean}_{sj}$ |
+| `metadata_only` | provenance fields | no numeric aggregation | none |
+
+A few families need a word beyond the table.
+
+**`spatial_total` and `derived_rate`** are the two coverage-weighted families.
+The total is the direct application of $\widehat{Y}_s = \sum_j w^{cov}_{sj} Y_j$.
+The rate preserves the coverage-weighted numerator total $\sum_j w^{cov}_{sj} A_j$
+and denominator total $\sum_j w^{cov}_{sj} B_j$ as separate carriers and divides
+them last, so it is a ratio of catchment totals rather than an average of tract
+ratios.
+
+**`area_weighted_scalar_proxy`** is the active intensive family in this release:
+a convex combination of tract values under the normalized mean weight, on the same
+per-unit scale as the inputs. Its point estimate is, by definition,
+$\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j$. The exact per-cell
+normalization the package applies when a single requested variable is missing in
+some intersecting tracts is the implementation's responsibility, documented in
+`?cacs_intersect_weight`; the definitional blend above always lands between the
+contributing tracts' minimum and maximum.
+
+**`population_weighted_scalar_proxy`** is a *reserved* family. It would replace
+the area-based mean weight with a population-based one, allocating by an ancillary
+population surface instead of by area to relax the uniform-within-tract assumption
+where population is concentrated. Conceptually this is dasymetric refinement: a
+finer ancillary layer (block-group population) is used to redistribute the coarser
+tract quantity, so the allocation follows people rather than land. In the current
+release this family is inert — `weight_method = "population"` stops with a clear
+error at the orchestrator boundary — and the population weight is not yet
+propagated through to estimates.
+
+**`median_proxy`** carries an explicit caveat. A median is not additive and not
+averageable: the median of a pooled population is generally *not* any weighted
+average of the sub-populations' medians, which would require the underlying income
+distribution the ACS does not publish at the tract level. The package reports a
+mean-weighted blend of the tract medians under $w^{mean}_{sj}$ as a **proxy**, a
+convenient summary on the right scale, and labels it as such throughout. It is
+*not* the true median household income of the catchment population. The proxy is
+honest about being a proxy.
+
+**`metadata_only`** variables are provenance fields that carry through without any
+numeric aggregation.
+
+The classifier and the per-family dispatch are documented in the "Estimand
+families and weights" section of `?cacs_intersect_weight`; this section is the
+derivation behind that documentation.
+
+## Why EPSG:5070
+
+Both weights are ratios in which the intersection area appears. A ratio of areas
+is only meaningful if numerator and denominator are measured in the *same* metric,
+and only *unbiased* across the catchment if that metric preserves area
+everywhere — so that "fraction of the tract" behaves like a fraction wherever the
+tract falls on the map. That is precisely the property of an **equal-area**
+projection, and it is why the choice of coordinate reference system is part of the
+estimator's correctness, not a display detail.
+
+On a geographic CRS (longitude/latitude), area is either dimensionless
+(degrees-squared, which is not an area) or, with great-circle integration, an
+ellipsoidal figure that is not equal-area. Web Mercator inflates area away from
+the equator dramatically. None preserves the proportionality the weights rely on,
+so the same physical hectare would be measured as more land in one part of the map
+than another, and $w^{cov}_{sj}$ would silently over- or under-credit tracts by
+where they sit, not by how much the catchment covers them. The package therefore
+transforms validated inputs **once**, before measuring any area, to **EPSG:5070
+(NAD83 / CONUS Albers Equal Area)**, an Albers equal-area projection whose
+standard parallels are placed so that areal distortion across the contiguous
+United States is held to a fraction of a percent — and across the Southeast,
+between the standard parallels, it is effectively nil. With areas measured on
+EPSG:5070, a square meter of intersection contributes the same weight in north and
+south, $\lvert T_j \rvert$ and $\lvert I_s \cap T_j \rvert$ are evaluated in the
+same $\text{m}^2$, and the coverage and mean weights mean what their formulas say.
+The choice also follows entrenched domain practice: equal-area CONUS Albers is the
+de facto standard for tract-level area work, which keeps these results comparable
+to neighboring analyses.
+
+This is also the reason the current release is scoped to the **contiguous United
+States plus DC**: EPSG:5070 is the authoritative equal-area default there, where
+Albers distortion is negligible. Regions outside that footprint — Alaska, Hawaii,
+Puerto Rico — would need a different equal-area CRS and are deferred to a future
+release. The single up-front transform happens before the per-site loop, and no
+re-projection occurs inside it, so every area in a run is comparable on the same
+equal-area metric.
+
+## Computation
+
+The mathematics above is per-tract, but a run involves many sites and many
+tracts, and the implementation strategy is a deliberate choice rather than an
+incidental one. The package evaluates the estimator with a **per-site loop**:
+each site (and drive-time band) is processed in a closed body that subsets only
+*that* isochrone, prefilters candidate tracts with a spatial index, cuts the exact
+intersection geometry against only those candidates, measures intersection area
+and divides by the pre-computed tract area to get $w^{cov}_{sj}$, builds both
+weight columns, and aggregates by family — before moving to the next. The
+alternative — one large vectorized spatial join over the full site-by-tract
+cross-product — is rejected for two reasons that matter at scale.
+
+- **Memory predictability.** A single join would hold every intersection polygon
+  in memory at once, so peak memory grows with the total number of intersections
+  across all sites. The per-site loop's working set is one catchment and its
+  handful of overlapping tracts, so peak memory is independent of the number of
+  sites and the largest study areas stay tractable.
+- **Debugging and error isolation.** Spatial intersection is sensitive to invalid
+  geometry, and in a single join one bad polygon can abort the whole batch with a
+  stack trace that does not say which input was at fault. In the loop, a failure is
+  attributable to a specific site, and a site whose geometry cannot be repaired is
+  marked with a missing result while the rest of the batch proceeds.
+
+Two robustness concerns are handled at the level of the individual site.
+
+**Geometry repair.** Tract polygons and provider isochrones often arrive with
+self-intersections, slivers, or holes that make an exact intersection throw a
+topology error. The package applies a tiered repair before intersecting: a quick
+validity check passes clean geometry through untouched; otherwise a standard
+make-valid step fixes the large majority of cases; and a last-resort zero-width
+buffer handles the remainder. Geometry that survives all three tiers still invalid
+is treated as a failure for that site rather than silently producing a wrong area.
+
+**Edge cases.** A handful of geometric situations are handled explicitly, each
+isolated to the site where it occurs.
+
+- *Empty intersection.* A catchment that overlaps no tract — outside ACS coverage,
+  or a missing isochrone — yields a result row marked as covering zero tracts, so
+  the caller can detect it rather than mistake it for a real estimate of zero.
+- *Sliver fragments.* A tract clipped along a coastline or river can intersect in
+  a fragment so thin that its weight is floating-point noise. A small `min_weight`
+  threshold drops these negligible fragments before they enter an aggregate, so
+  they cannot perturb a total.
+- *Self-intersections.* These are the geometry-repair case above, resolved by the
+  tiered repair and, failing that, by isolating the site.
+
+The conceptual point is that the loop turns batch-level fragility into site-level
+diagnosability, and the equal-area weights are computed identically inside it. The
+full parameter contract, the default `min_weight`, the audit attribute used below,
+and the per-row provenance live in `?cacs_intersect_weight`.
+
+## Numerical verification: the formulas match the package
+
+This is the section that earns a methodologist's trust. We take **one** site and
+**one** ring from the fixtures, pull the per-tract audit the package exposes, and
+**recompute the coverage weights and a spatial-total aggregation entirely by
+hand** from the audit's two area columns. Then we show the by-hand figures equal
+the package's reported figures to machine precision. If the formulas on this page
+were not the formulas the code runs, this check would fail.
+
+We deliberately pick a catchment whose coverage is *partial and uneven* — not a
+trivial fully-enclosed case — so the area-fraction formula is genuinely exercised
+and the coverage and mean weights are genuinely different. The synthetic site
+`AL_SITE_17` at a 10-minute drive time intersects three tracts: one it fully
+contains and two it clips at the edge.
+
+First, intersect and keep the per-tract audit:
+
+```{r}
+#| label: vf-intersect
+#| eval: true
+
+# These fixtures are exactly the shapes pipeline stages 1-2 would have returned,
+# frozen for offline reproducibility.
+sites <- readRDS(system.file(
+  "extdata", "legacy_2025_sites.rds", package = "catchmentACS"
+))
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_17"
+drive_time <- 10L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  keep_tract_audit = TRUE,
+  verbose          = FALSE
+)
+```
+
+The audit attribute holds, for each tract the catchment touched, the
+intersection area `int_area_m2` and the full tract area `tract_area_m2` — the two
+ingredients of $w^{cov}_{sj}$ — both measured on EPSG:5070:
+
+```{r}
+#| label: vf-audit
+#| eval: true
+
+audit <- attr(weighted, "cacs_tract_audit") |>
+  select(GEOID, int_area_m2, tract_area_m2) |>
+  arrange(desc(int_area_m2))
+
+audit
+```
+
+### Step 1 — recompute both weights by hand
+
+From those two columns we form the coverage weight (each tract's own denominator)
+and the normalized mean weight (the common catchment denominator), straight from
+the formulas above:
+
+```{r}
+#| label: vf-weights
+#| eval: true
+
+hand <- audit |>
+  mutate(
+    w_cov  = int_area_m2 / tract_area_m2,        # |I_s n T_j| / |T_j|
+    w_mean = int_area_m2 / sum(int_area_m2)      # |I_s n T_j| / sum_k |I_s n T_k|
+  )
+
+hand |> select(GEOID, w_cov, w_mean)
+
+c(
+  sum_w_cov  = sum(hand$w_cov),    # NOT 1: each term has its own denominator
+  sum_w_mean = sum(hand$w_mean)    # exactly 1 by construction
+)
+```
+
+The three coverage weights are `1.000`, `0.1125`, and `0.1125`: one tract fully
+enclosed, two clipped to about a ninth of their area. Their sum, about `1.225`,
+is the effective number of whole tracts the catchment covers — emphatically not
+one, exactly as the derivation said. The mean weights, by contrast, sum to
+exactly `1`. That structural contrast is the entire difference between a *total*
+and an *average*, here in fixture numbers.
+
+### Step 2 — recompute a spatial total by hand
+
+Now a count. *Persons in poverty* (`B17001_002`) is a `spatial_total`, so the
+package reports $\widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j$. We pull the three
+tracts' published counts and form that sum by hand:
+
+```{r}
+#| label: vf-total
+#| eval: true
+
+counts <- acs |>
+  sf::st_drop_geometry() |>
+  filter(GEOID %in% hand$GEOID, variable == "B17001_002") |>
+  select(GEOID, Y = estimate)
+
+hand_total <- hand |>
+  select(GEOID, w_cov) |>
+  left_join(counts, by = "GEOID")
+
+hand_total
+
+hand_Y_hat       <- sum(hand_total$w_cov * hand_total$Y)   # sum_j w_cov * Y_j
+hand_weight_sum  <- sum(hand_total$w_cov)                  # sum_j w_cov
+
+c(hand_Y_hat = hand_Y_hat, hand_weight_sum = hand_weight_sum)
+```
+
+### Step 3 — compare against the package
+
+The package's own row for the same variable reports the estimate and the weight
+sum it computed internally:
+
+```{r}
+#| label: vf-pkg-row
+#| eval: true
+
+pkg_row <- weighted |>
+  filter(variable == "B17001_002") |>
+  select(variable, estimate, weight_sum, n_tracts,
+         estimand_family, weight_basis)
+
+pkg_row
+```
+
+`estimand_family` is `spatial_total` and `weight_basis` is `coverage`,
+confirming the package routed this count through the coverage path. Now the
+equality check — by-hand against package, on both the estimate and the weight
+sum:
+
+```{r}
+#| label: vf-equality
+#| eval: true
+
+c(
+  estimate_match      = isTRUE(all.equal(hand_Y_hat,      pkg_row$estimate)),
+  weight_sum_match    = isTRUE(all.equal(hand_weight_sum, pkg_row$weight_sum)),
+  estimate_abs_diff   = abs(hand_Y_hat      - pkg_row$estimate),
+  weight_sum_abs_diff = abs(hand_weight_sum - pkg_row$weight_sum)
+)
+```
+
+Both match. The hand-computed spatial total — about `1237` persons in poverty —
+equals the package's `estimate`, and the hand-computed $\sum_j w^{cov}_{sj}$
+equals the package's `weight_sum`, with absolute differences at the
+floating-point floor (on the order of $10^{-12}$ and $10^{-15}$). The
+`weight_sum` column the package reports *is* the not-equal-to-one coverage sum
+from Step 1, and the `estimate` *is* the coverage-weighted count we built from
+the audit. The formulas in this article and the arithmetic in the code are the
+same arithmetic.
+
+The mean weight's defining property is equally direct to confirm from the same
+audit:
+
+```{r}
+#| label: vf-mean-sum
+#| eval: true
+
+# w_mean sums to exactly one within this (site, drive_time) cell.
+isTRUE(all.equal(sum(hand$w_mean), 1))
+```
+
+### The intensive path, by definition
+
+A `spatial_total` count and an `area_weighted_scalar_proxy` scalar reuse this
+*identical* intersection geometry; only the denominator of the weight differs —
+$\lvert T_j \rvert$ for the total just verified, $\sum_k \lvert I_s \cap T_k
+\rvert$ for the mean. By definition the scalar proxy is the mean-weighted blend
+
+$$
+\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j ,
+$$
+
+a convex combination that lands strictly between $\min_j X_j$ and $\max_j X_j$.
+Because the mean weights just summed to one, this is the structural guarantee
+that a catchment "average per-capita income" cannot exceed any tract's
+per-capita income — the exact opposite of what summing an intensive level with
+the coverage weight would do, which inflates the figure past every tract's value
+into a number no one earns. That is the silent estimand error the family split
+exists to enforce, and it is why the package routes `B19301_001` through the
+mean path and `B17001_002` through the coverage path automatically.
+
+The package's reported proxy `estimate` for a scalar is on this per-unit scale by
+construction. Its exact per-cell normalization — in particular how it handles a
+requested variable that is missing in some intersecting tracts — is a bookkeeping
+detail that is the package's responsibility, documented in the "Estimand families
+and weights" section of `?cacs_intersect_weight`. We therefore frame the proxy
+here at the level of its definition rather than printing a specific proxy estimate
+number, so this self-contained check stays anchored on the **coverage-weighted
+`spatial_total`** path it verifies exactly, and on the
+$\sum_j w^{mean}_{sj} = 1$ identity, both confirmed above to machine precision.
+
+To summarize the check: the coverage weight, its non-unit sum, the package's
+`weight_sum`, and the coverage-weighted `spatial_total` all coincide with the
+hand computation to the floating-point floor; the mean weights sum to exactly
+one; and the scalar proxy is the definitional mean-weighted blend on the
+per-unit scale, between each tract's minimum and maximum.
+
+## Where this sits
+
+This article derived and verified the spatial half of the estimator. Its two
+companions cover the uncertainty half, and the methodology overview ties all
+three together; each reuses the notation fixed in the overview.
+
+- **The estimator overview**, with the shared notation, the six-family table,
+  and the count-vs-average worked example:
+  `vignette("methodology", package = "catchmentACS")`. This article is the
+  derivation behind its weight and family sections.
+- **MOE propagation** — the published tract MOEs are carried through these same
+  weights by `cacs_propagate_moe()`; the four formula families, the
+  $M = 1.645\,SE$ conversion, the ratio-variance forms, and the independence
+  assumptions are derived in
+  `vignette("theory-moe-propagation", package = "catchmentACS")` and
+  `?cacs_propagate_moe`.
+- **Derived rates** — the coverage-weighted numerator and denominator totals
+  built here are divided into the curated catchment rates in
+  `vignette("theory-derived-rates", package = "catchmentACS")` and
+  `?cacs_derive_rates`.
+- **Function reference** — the locked signature, the per-site loop, the edge
+  cases, the tract audit attribute used above, the `min_weight` sliver filter,
+  the per-row provenance, and the "Estimand families and weights" section:
+  `?cacs_intersect_weight`.
+
+For the applied, run-it path that produces reporting tables from these same
+fixtures, see `vignette("getting-started", package = "catchmentACS")` and
+`vignette("alabama-tutorial", package = "catchmentACS")`.

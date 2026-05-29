@@ -1,0 +1,368 @@
+---
+title: "Porting catchmentACS workflows to v0.3"
+vignette: >
+  %\VignetteIndexEntry{Porting catchmentACS workflows to v0.3}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  warning: false
+  message: false
+---
+
+This guide collects, in one place, the changes you are most likely to hit when
+moving a v0.1 or v0.2 workflow to v0.3. If a validator message pointed you to
+`vignette("porting-v01-to-v03", package = "catchmentACS")`, work through the
+sections below in order.
+
+Four changes account for most of the migration work: isochrone topology is now
+fixed to the cumulative form, the OSRM `res` default is stated explicitly as
+`70L`, cache identity is protected by a fingerprint, and the SSI rate formula is
+corrected to `B19056_002 / B19056_001`.
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+
+cacs_resource <- function(dir, file) {
+  installed <- system.file(dir, file, package = "catchmentACS")
+  if (nzchar(installed) && file.exists(installed)) {
+    return(installed)
+  }
+  for (candidate in c(file.path("inst", dir, file),
+                      file.path("..", "inst", dir, file))) {
+    if (file.exists(candidate)) {
+      return(normalizePath(candidate, winslash = "/", mustWork = TRUE))
+    }
+  }
+  stop("Cannot find bundled catchmentACS resource: ", file.path(dir, file))
+}
+
+fx031 <- readRDS(cacs_resource("testdata", "fixture_031_3site_anchors.rds"))
+fx032 <- readRDS(cacs_resource("testdata", "fixture_032_3site_fresh.rds"))
+annulus_fixture <- readRDS(cacs_resource("testdata", "fixture_annulus_input.rds"))
+legacy_iso <- readRDS(cacs_resource("extdata", "legacy_2025_isochrones.rds"))
+```
+
+::: {.callout-note}
+## About the data in this article
+
+Every table and check here is built entirely from the package's bundled
+`inst/testdata` and `inst/extdata` fixtures (the synthetic `fixture_*` and
+`legacy_2025_*` objects), so this article renders with **no** Census, OSRM, ORS,
+or other network calls. These fixtures preserve the production calling contract
+(sites, drive-time polygons, tract-level ACS variables) but are **synthetic and
+illustrative** — included only for examples, tests, and reproducible package
+checks. They are **not** live Alabama policy estimates and must not be cited as
+real ACS results. Any real analysis requires a fresh live run (see
+`vignette("providers", package = "catchmentACS")`).
+:::
+
+## Quick map
+
+| Area | v0.1 / v0.2 pattern | v0.3 contract |
+|---|---|---|
+| Isochrone topology | annulus and cumulative rows could be mixed | pipeline ingestion accepts cumulative rings only |
+| Annulus conversion | implicit interpretation was easy to miss | convert explicitly with `cacs_rings_to_cumulative()` |
+| OSRM `res` | omitting `res` followed older behavior | omitting `res` resolves to `70L` with a once-per-session notice |
+| Cache identity | legacy entries had weaker compatibility checks | persisted entries use sha256 fingerprint sidecars |
+| SSI rate | the old denominator used the wrong household universe | `ssi_rate = B19056_002 / B19056_001` |
+| Diagnostics | run-time errors were terse | validators include issue tables, fix hints, and examples |
+| Summary output | wide tibble print could wrap awkwardly | use `cacs_summary_as_markdown()` for Quarto/GitHub tables |
+
+## Eight script-side transitions from the 2025 replication
+
+### S-01: Use a deliberate planar regime for archived polygons
+
+Older archived polygons can be repaired and compared after moving to a metric
+CRS. The package handles this internally; in custom replication scripts, make
+the same choice explicit.
+
+```{r}
+#| label: s01-planar-regime
+#| eval: true
+
+old_s2 <- sf::sf_use_s2(FALSE)
+iso_5070 <- fx031$iso_sf_v2 |>
+  sf::st_make_valid() |>
+  sf::st_transform(5070)
+self_intersects <- diag(sf::st_intersects(iso_5070, iso_5070, sparse = FALSE))
+sf::sf_use_s2(old_s2)
+
+tibble::tibble(all_self_intersect = all(self_intersects))
+```
+
+### S-02: Filter cumulative rings by both lower and upper bounds
+
+The 2025 script initially matched `isomax` alone, which can mix annulus and
+cumulative rows. v0.3 makes topology explicit.
+
+```{r}
+#| label: s02-ring-filter
+#| eval: true
+
+mixed <- rbind(
+  annulus_fixture[annulus_fixture$isomax == 10, ],
+  transform(
+    annulus_fixture[annulus_fixture$isomax == 10, ],
+    isomin = 0L,
+    ring_topology = "cumulative"
+  )
+)
+
+tibble::tibble(
+  rows_by_isomax_only = nrow(dplyr::filter(sf::st_drop_geometry(mixed),
+                                           isomax == 10L)),
+  rows_by_cumulative_filter = nrow(dplyr::filter(sf::st_drop_geometry(mixed),
+                                                 isomin == 0L,
+                                                 isomax == 10L,
+                                                 ring_topology == "cumulative"))
+)
+```
+
+### S-03: Use the canonical coordinate source
+
+When you reconcile administrative and geocoded coordinates, keep the decision
+as data, not a hand-typed value, so each site records which source it used and
+why. The illustrative table below flags one anchor where the two sources
+differed by more than 600 m (synthetic example; real administrative
+coordinates are not shipped with the package).
+
+```{r}
+#| label: s03-coordinate-audit
+#| eval: true
+
+tibble::tibble(
+  site_id      = c("AL_ANCHOR_01", "AL_ANCHOR_02", "AL_ANCHOR_03"),
+  used_in_2025 = c("administrative", "administrative", "geocoded"),
+  geo_diff_m   = c(0, 621, 0),
+  verdict      = c("match", "mismatch (>600 m; used administrative)", "match")
+)
+```
+
+### S-04: Prefer scalar-safe extraction
+
+`mapply()` can return a list when the extraction function is not scalar-stable.
+Use `vapply()` or dplyr joins for deterministic numeric vectors.
+
+```{r}
+#| label: s04-scalar-extraction
+#| eval: true
+
+acs_032 <- fx032$acs_sf |> sf::st_drop_geometry()
+queries <- acs_032 |>
+  dplyr::filter(variable == "B01003_001") |>
+  dplyr::slice_head(n = 3)
+
+extract_one <- function(data, geoid, variable) {
+  data$estimate[data$GEOID == geoid & data$variable == variable][[1]]
+}
+
+vapply(seq_len(nrow(queries)), function(i) {
+  extract_one(acs_032, queries$GEOID[[i]], queries$variable[[i]])
+}, numeric(1))
+```
+
+### S-05: Map friendly 2025 wide names back to raw ACS codes
+
+Legacy 2025 exports sometimes used friendly stems such as `total_pop_E`. The
+v0.3 package surface expects raw ACS variable codes in long form.
+
+```{r}
+#| label: s05-friendly-names
+#| eval: true
+
+wide_2025 <- queries |>
+  dplyr::transmute(GEOID, total_pop_E = estimate)
+code_to_stem <- c(B01003_001 = "total_pop")
+
+tibble::tibble(
+  code = "B01003_001",
+  legacy_column = paste0(unname(code_to_stem[["B01003_001"]]), "_E"),
+  first_value = wide_2025[[paste0(unname(code_to_stem[["B01003_001"]]), "_E")]][[1]]
+)
+```
+
+### S-06: Preflight CRS before intersection
+
+`cacs_intersect_weight()` accepts isochrones in EPSG:4326 and ACS tracts in
+EPSG:4269, then reprojects internally. Use `cacs_validate_iso()` to catch CRS
+mistakes before the heavy path.
+
+```{r}
+#| label: s06-crs-preflight
+#| eval: true
+
+bad_crs <- sf::st_transform(legacy_iso[1:2, ], 4269)
+cacs_validate_iso(bad_crs) |>
+  dplyr::filter(check == "iso_crs") |>
+  dplyr::select(check, actual, expected, example)
+```
+
+### S-07: Keep provider metadata typed
+
+`provider_downgrade` is logical, not character. v0.3 diagnostics now point to
+the exact column and an example.
+
+```{r}
+#| label: s07-provider-downgrade-type
+#| eval: true
+
+bad_type <- legacy_iso[1, ]
+bad_type$provider_downgrade <- NA_character_
+cacs_validate_iso(bad_type) |>
+  dplyr::filter(col == "provider_downgrade") |>
+  dplyr::select(col, actual, expected, example)
+```
+
+### S-08: Treat weighted seams as tibbles with audit attributes
+
+The weighted seam is a canonical long tibble, not an `sf` object and not a
+tract-level geometry table. Tract and carrier details live in explicit columns
+or attributes.
+
+```{r}
+#| label: s08-weighted-seam-location
+#| eval: true
+
+weighted <- fx031$weighted_seam_v2
+tibble::tibble(
+  is_sf = inherits(weighted, "sf"),
+  has_GEOID = "GEOID" %in% names(weighted),
+  has_weight_sum = "weight_sum" %in% names(weighted),
+  carrier_rows = nrow(attr(weighted, "cacs_aggregation_carriers"))
+)
+```
+
+## v0.2 to v0.3 package changes
+
+| Group | User-facing change |
+|---|---|
+| Silent data fixes | ACS test cache isolation, fingerprint sidecars, corrected SSI formula, and carrier-aware rate MOE |
+| Architecture | cumulative-only rings, OSRM omitted-`res = 70L`, cache kept on by default but made verifiable |
+| UX | classed conditions, progress messages, visual helper input forms, schema preflight |
+| Performance | fast OSRM path, warm-cache counters, and regression guards |
+| Design | tract audit attribute, urbanicity divergence docs, internal sf noise suppression, Markdown summary helper |
+
+## Cumulative-rings migration
+
+`ring_topology = "annulus"` is not accepted by v0.3 ingestion. Convert complete
+annulus chains explicitly, and reject incomplete chains during preflight.
+
+```{r}
+#| label: cumulative-ring-positive-example
+#| eval: true
+
+make_square <- function(xmin, ymin, xmax, ymax) {
+  sf::st_polygon(list(rbind(
+    c(xmin, ymin), c(xmax, ymin), c(xmax, ymax),
+    c(xmin, ymax), c(xmin, ymin)
+  )))
+}
+
+toy_annulus <- sf::st_sf(
+  tibble::tibble(
+    site_id = "S01",
+    drive_time_min = c(5L, 10L, 15L),
+    isomin = c(0L, 5L, 10L),
+    isomax = c(5L, 10L, 15L),
+    ring_topology = "annulus",
+    provider = "osrm",
+    profile = "car",
+    generated_at = Sys.time()
+  ),
+  geometry = sf::st_sfc(
+    make_square(-87.10, 33.00, -87.00, 33.10),
+    make_square(-87.15, 32.95, -86.95, 33.15),
+    make_square(-87.20, 32.90, -86.90, 33.20),
+    crs = 4326
+  )
+)
+
+cacs_rings_to_cumulative(toy_annulus) |>
+  sf::st_drop_geometry() |>
+  dplyr::select(site_id, isomin, isomax, drive_time_min, ring_topology)
+```
+
+## Cache migration
+
+The first v0.3 run may recompute old cache entries. That is expected: entries
+without a valid fingerprint sidecar, corrupt entries, malformed sidecars, or
+digest mismatches are treated as misses.
+
+```{r}
+#| label: cache-state
+#| eval: true
+
+state <- cacs_get_cache_state()
+state |>
+  dplyr::select(enabled, namespace_mode, fingerprint_algorithm)
+```
+
+For reproducible scripts, temporarily disable cache reads or set
+`options(catchmentACS.cache_dir = "...")` before the package cache path is
+first resolved:
+
+```{r}
+#| label: cache-controls
+#| eval: true
+
+old_cache_enabled <- cacs_get_cache_state()$enabled[[1]]
+cacs_set_cache(FALSE, scope = "session")
+cacs_get_cache_state() |>
+  dplyr::select(enabled, cache_dir) |>
+  dplyr::mutate(cache_dir = "<user-cache-dir>/catchmentACS")
+cacs_set_cache(old_cache_enabled, scope = "session")
+```
+
+## API surface deltas
+
+| Helper | Purpose |
+|---|---|
+| `cacs_validate_iso()` | non-aborting isochrone preflight issue table |
+| `cacs_rings_to_cumulative()` | explicit annulus-to-cumulative conversion |
+| `cacs_set_cache()` / `cacs_get_cache_state()` | cache controls and hit/miss diagnostics |
+| `cacs_capture_conditions()` | classed condition capture for audit logs |
+| `cacs_describe()` | provenance-oriented object description |
+| `cacs_summary_as_markdown()` | Markdown rendering for summary tables |
+
+```{r}
+#| label: api-summary-markdown
+#| eval: true
+
+summary_tbl <- tibble::tibble(
+  variable = c("poverty_rate", "ssi_rate"),
+  mean = c(0.123456, 0.045678),
+  sd = c(0.0101, 0.0042),
+  n_NA = c(0L, 0L)
+)
+cacs_summary_as_markdown(summary_tbl)
+```
+
+## What did not change
+
+`cacs_run()` remains the main entry point. Cache remains enabled by default,
+because v0.3 makes cache entries safer rather than removing the speed benefit.
+Explicit `res = 50L` remains supported when reproducing v0.2-style OSRM
+geometry. In v0.3, omitting `res` resolves to `70L`; in v0.5.0, public-demo OSRM
+calls default to `30L` unless demo-budget protection is disabled, while
+docker and self-hosted paths keep the `70L` default.
+
+## Further reading
+
+- `vignette("getting-started", package = "catchmentACS")`
+- `vignette("alabama-tutorial", package = "catchmentACS")`
+- `vignette("providers", package = "catchmentACS")`
+- `vignette("porting-v03-to-v04", package = "catchmentACS")` — v0.3 → v0.4/v0.5
+- `?cacs_run`
+- `?cacs_validate_iso`
+- `?cacs_rings_to_cumulative`
+- `?cacs_describe`
+- `?cacs_summary_as_markdown`

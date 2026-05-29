@@ -1,0 +1,206 @@
+---
+title: "Porting catchmentACS workflows to v0.5"
+vignette: >
+  %\VignetteIndexEntry{Porting catchmentACS workflows to v0.5}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+
+# Force network-free, deterministic builds: no provider/Census calls, no cache.
+old_options <- options(
+  catchmentACS.progress = "off",
+  catchmentACS.rate_first_default = FALSE
+)
+old_cache <- getOption("catchmentACS.cache_enabled", NULL)
+on.exit(options(old_options), add = TRUE)
+on.exit(options(catchmentACS.cache_enabled = old_cache), add = TRUE)
+cacs_set_cache(FALSE, scope = "session")
+```
+
+This vignette collects the five changes you need to know when moving a v0.4
+script to v0.5. **Good news first**: v0.5 is a beta-readiness release of
+safety and clarity refinements, not breaking changes. Almost every v0.4 script
+runs unmodified. The `cacs_run()` contract, the five sanctioned rates, the
+canonical output schema, and the area-weighting math are all unchanged; the
+changes below mostly make existing behavior more complete or more honest about
+its limits.
+
+For a full applied walkthrough see `vignette("getting-started")` and
+`vignette("alabama-tutorial")`; for routing-provider details see
+`vignette("providers")`; and for the prior step see
+`vignette("porting-v03-to-v04")`.
+
+## Quick map
+
+| Area | v0.4 behavior | v0.5 behavior |
+|---|---|---|
+| `$isochrone` list-column fill (`output = "list_column"` / `"both"`) | populated on bypass paths only | populated on **all** paths, including computed 5-call / 4-call-B |
+| `cacs_isochrone()` / `cacs_run()` site input | `sf` points or tibble | also accepts base `data.frame` |
+| `cacs_acs_prefetch()` year handling | broader, fractional years truncated | pinned to 2009-2024; fractional years rejected |
+| ACS key requirement | key checked before cache lookup | cache checked **first**; key needed only for live misses / `force_refresh` |
+| Provider / weighting status | some surfaces returned placeholders | OSRM + ORS implemented; others fail loud |
+| `weight_method = "population"` | aborts during the run | aborts **immediately**, before any work |
+
+## Change 1 -- list-column output is now fully populated
+
+In v0.4, `cacs_run(output = "list_column")` (and `output = "both"`) filled the
+`$isochrone` list-column only on the precomputed bypass paths. In v0.5 the same
+list-column cell is filled from the resolved isochrone object on **all**
+supported execution paths, including the computed 5-call path and the 4-call-B
+path (`acs` supplied, isochrones computed). Each `$isochrone` cell holds the
+one-row `sf` for its `(site_id, drive_time_min)` pair, so the result is
+self-contained for mapping whether or not you passed `precomputed_isochrones`.
+
+```{r}
+#| eval: false
+
+# v0.5: $isochrone is populated even when isochrones are computed live.
+run_lc <- cacs_run(
+  sites       = sites_sf,
+  state       = "AL",
+  drive_times = c(5, 10),
+  provider    = "osrm",
+  output      = "list_column"
+)
+print(run_lc$isochrone[[1]])   # an sf row, not NULL
+```
+
+This is strictly more data than v0.4: no v0.4 script relied on these cells being
+`NULL`. The once-per-session fill notice you may have seen on bypass paths in
+v0.4 now also fires on the computed paths.
+
+## Change 2 -- base `data.frame` site inputs
+
+`cacs_isochrone()` now accepts a base `data.frame` of sites in addition to
+tibbles and `sf` POINT objects, and `cacs_run()` was aligned to the same input
+contract. A non-`sf` input must still carry `site_id`, `lon`, and `lat`
+columns; the function promotes it to `sf` (EPSG:4326) for you.
+
+```{r}
+#| eval: false
+
+sites_df <- data.frame(
+  site_id = c("S1", "S2"),
+  lon     = c(-86.81, -87.55),
+  lat     = c(33.52, 34.73)
+)
+
+# v0.5: a plain data.frame works directly, no manual sf::st_as_sf() needed.
+iso <- cacs_isochrone(sites_df, drive_times = c(5, 10), provider = "osrm")
+out <- cacs_run(sites_df, state = "AL", drive_times = c(5, 10))
+```
+
+Tibble and `sf` inputs behave exactly as before, so existing scripts need no
+change. See `?cacs_isochrone` and `?cacs_run` for the full input contract.
+
+## Change 3 -- ACS preflight is stricter and safer
+
+`cacs_acs_prefetch()` tightened three behaviors:
+
+- **End years pinned to 2009-2024.** This release verifies ACS5 support only
+  over that window. A `year` outside it aborts with a clear range message
+  instead of attempting an unverified Census endpoint.
+- **Fractional years are rejected.** A non-integer `year` (e.g. `2023.5`) now
+  aborts asking for a whole-number year, rather than silently truncating it.
+- **The cache is checked before a Census key is required.** A cache hit (or an
+  explicit `acs =` bypass through `cacs_run()`) is served with **no**
+  `CENSUS_API_KEY`. Only a live cache *miss* or `force_refresh = TRUE` requires
+  a key before any tidycensus metadata or data call.
+
+```{r}
+#| eval: false
+
+# Cache hit or explicit `acs =` bypass: no Census key needed.
+acs_cached <- cacs_acs_prefetch(state = "AL", year = 2023)   # served from cache
+
+# Live miss or force_refresh = TRUE: a CENSUS_API_KEY is required first.
+acs_fresh <- cacs_acs_prefetch(state = "AL", year = 2023, force_refresh = TRUE)
+
+# Rejected in v0.5 (these abort rather than guess):
+# cacs_acs_prefetch(state = "AL", year = 2025)     # outside 2009-2024
+# cacs_acs_prefetch(state = "AL", year = 2023.5)   # fractional year
+```
+
+If a v0.4 script passed an out-of-window or fractional `year`, round it to a
+supported whole-number year. See `?cacs_acs_prefetch` for the cache and
+live-access sections.
+
+## Change 4 -- provider and weighting status is explicit and fail-loud
+
+v0.5 makes the implemented surface explicit across the documentation and the
+code paths. OSRM and ORS are the implemented routing providers. Mapbox, r5r,
+population weighting, and custom-rate catalogues are reserved or deferred for a
+future release, and selecting them now **fails loud** with a future-release
+message instead of returning a partial or placeholder result.
+
+```{r}
+#| eval: false
+
+# Implemented today:
+iso_osrm <- cacs_isochrone(sites_df, provider = "osrm")
+iso_ors  <- cacs_isochrone(sites_df, provider = "ors")   # needs an ORS key
+
+# Reserved -- these abort with a future-release message in v0.5:
+# cacs_isochrone(sites_df, provider = "mapbox")
+# cacs_isochrone(sites_df, provider = "r5r")
+```
+
+If your script only used OSRM or ORS (the documented routing providers), nothing
+changes. See `vignette("providers")` for provider setup and the implemented
+matrix.
+
+## Change 5 -- `weight_method = "population"` fails fast
+
+`weight_method = "population"` is still reserved for a future release. In v0.5 it
+now aborts **immediately at the orchestrator boundary**, before any ACS,
+provider, or spatial work begins, so you no longer wait on a live routing or
+Census request for a path that cannot complete. Area weighting remains the only
+implemented method.
+
+```{r}
+#| eval: false
+
+# v0.5: aborts at once, before any network or spatial work.
+# cacs_run(sites_df, state = "AL", weight_method = "population")
+
+# Use the implemented method (the default):
+out <- cacs_run(sites_df, state = "AL", weight_method = "area")
+```
+
+The reserved `bg_pop_sf` argument is likewise ignored under area weighting. If a
+v0.4 script already used `weight_method = "area"` (the default), it is unaffected.
+
+## What did not change
+
+- The `cacs_run()` contract: the 5-call / 3-call / 4-call execution-path
+  semantics and the 21-argument signature.
+- The five sanctioned rates and their frozen formulas.
+- The canonical long output schema and its column order.
+- The area-weighting math and the per-tract area-weight definitions.
+- All v0.4 classed conditions still emit; v0.5 only broadens wording and adds
+  fail-loud guards where placeholders used to be.
+
+## Further reading
+
+- `?cacs_run` -- list-column fill, provider/weighting status, fast-fail boundary.
+- `?cacs_isochrone` -- accepted site inputs and provider status.
+- `?cacs_acs_prefetch` -- year window, cache behavior, and live-access sections.
+- `vignette("getting-started")` -- the end-to-end workflow.
+- `vignette("alabama-tutorial")` -- a full applied walkthrough.
+- `vignette("providers")` -- routing-provider setup and the implemented matrix.
+- `vignette("porting-v03-to-v04")` -- the previous migration guide.

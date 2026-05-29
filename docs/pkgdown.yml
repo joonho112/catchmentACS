@@ -1,0 +1,19 @@
+pandoc: '3.8'
+pkgdown: 2.2.0
+pkgdown_sha: ~
+articles:
+  alabama-tutorial: alabama-tutorial.html
+  getting-started: getting-started.html
+  methodology: methodology.html
+  porting-v01-to-v03: porting-v01-to-v03.html
+  porting-v03-to-v04: porting-v03-to-v04.html
+  porting-v04-to-v05: porting-v04-to-v05.html
+  providers: providers.html
+  theory-derived-rates: theory-derived-rates.html
+  theory-moe-propagation: theory-moe-propagation.html
+  theory-spatial-aggregation: theory-spatial-aggregation.html
+  visual-walkthrough: visual-walkthrough.html
+last_built: 2026-05-29T21:17Z
+urls:
+  reference: https://joonho112.github.io/catchmentACS/reference
+  article: https://joonho112.github.io/catchmentACS/articles

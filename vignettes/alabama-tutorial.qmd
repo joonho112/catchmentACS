@@ -1,0 +1,765 @@
+---
+title: "Alabama Pre-K tutorial: from the raw pipeline to reporting tables"
+vignette: >
+  %\VignetteIndexEntry{Alabama Pre-K tutorial: from the raw pipeline to reporting tables}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    fig-width: 7
+    fig-height: 5
+    fig-align: center
+    out-width: "85%"
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+library(tidyr)
+
+# Force network-free, deterministic builds: no provider/Census calls, no cache.
+old_options <- options(
+  catchmentACS.progress = "off",
+  catchmentACS.rate_first_default = FALSE
+)
+old_cache <- getOption("catchmentACS.cache_enabled", NULL)
+on.exit(options(old_options), add = TRUE)
+on.exit(options(catchmentACS.cache_enabled = old_cache), add = TRUE)
+cacs_set_cache(FALSE, scope = "session")
+```
+
+This is the package's long-form, flagship tutorial. Where
+`vignette("getting-started", package = "catchmentACS")` shows the whole pipeline
+in one call and `vignette("methodology", package = "catchmentACS")` explains the
+math, this article does two things in sequence. First it takes the one call
+*apart* — walking the five pipeline functions one stage at a time, reading each
+intermediate result, then collapsing them back into a single `cacs_run()` and
+confirming the two paths agree to the last digit. Then it carries the recomposed
+result all the way to the *deliverables* an equity researcher actually hands
+off: a site-by-drive-time rate matrix, a priority ranking, a single-site
+profile, and a tidy table ready to write to CSV.
+
+It is written for a Pre-K equity researcher who wants to understand each stage
+well enough to describe it in a methods section, and who then needs to turn the
+output into a memo, a dissertation chapter, or a journal table. It assumes you
+have met `dplyr`, `sf`, isochrones, and margins of error before.
+
+The motivating question comes from Pre-K funding-equity work: *for each First
+Class Pre-K site, what are the neighborhood
+conditions — poverty, food assistance, employment — within a short drive, and
+how much do those conditions shift as the catchment grows from 5 to 15 minutes?*
+`catchmentACS` is the reusable engine for that question. It replaces an earlier
+set of one-off analysis scripts with a documented, regression-tested package, so
+a finding can be reproduced — and a table re-generated — by a colleague who was
+not in the room when it was first run. Stable, uncertainty-aware answers feed
+directly into how the state reasons about where new Pre-K capacity should go.
+
+::: {.callout-note}
+## About the data in this article
+
+Every table, map, and figure here is built entirely from the package's bundled
+`inst/extdata` fixtures (`cacs_alabama_sites`, the synthetic `legacy_2025_*`
+objects, and `sample_alabama_subset`), so this article renders with **no**
+Census, OSRM, ORS, or other network calls. These fixtures preserve the
+production calling contract (sites, drive-time polygons, tract-level ACS
+variables) but are **synthetic and illustrative** — included only for examples,
+tests, and reproducible package checks. They are **not** live Alabama policy
+estimates and must not be cited as real ACS results. Any real analysis requires
+a fresh live run (see `vignette("providers", package = "catchmentACS")`).
+:::
+
+## The data: Alabama Pre-K sites
+
+A production run starts from a small table of program sites. The bundled
+`cacs_alabama_sites` shows the shape that table needs: a stable site identifier,
+a display name, a county FIPS code, a region label, and a single point geometry
+in EPSG:4326. These ten sites are the live-run template — coordinates are
+jittered and names are anonymized — so you can swap in your own administrative
+site list with the same columns and nothing else changes.
+
+```{r}
+#| label: preview-sites
+#| eval: true
+
+cacs_alabama_sites |>
+  sf::st_drop_geometry() |>
+  select(site_id, site_name, county_fips, region_label)
+```
+
+```{r}
+#| label: preview-sites-geometry
+#| eval: true
+
+sf::st_geometry(cacs_alabama_sites)
+```
+
+One bookkeeping note. `cacs_alabama_sites` is the live-run *template*; the
+executable path in this article instead uses the interlocking `legacy_2025_*`
+fixtures, because those carry the precomputed isochrones and the matching frozen
+baseline that let the whole document render offline and deterministically. So
+that the intermediate tables below stay small enough to read, the walkthrough
+uses three legacy sites — one northern, one north-central, one northwest — at
+drive times of 5, 10, and 15 minutes. The reasoning is identical for the full
+ten-site batch.
+
+```{r}
+#| label: choose-sites
+#| eval: true
+
+site_ids <- c("AL_SITE_03", "AL_SITE_07", "AL_SITE_08")
+```
+
+## The pipeline, one stage at a time
+
+`cacs_run()` orchestrates five functions in sequence. The first two reach the
+network; the last three are pure local computation on whatever those two
+returned:
+
+> `cacs_acs_prefetch()` (ACS download) → `cacs_isochrone()` (routing) →
+> `cacs_intersect_weight()` → `cacs_propagate_moe()` → `cacs_derive_rates()`.
+
+This section runs each stage on its own so you can see the object that moves
+between them — and so you can lift any stage out as a standalone manuscript
+figure.
+
+### Stages 1 and 2 are network operations (shown, not run)
+
+In a live run you would fetch statewide ACS tracts and draw drive-time
+isochrones like this. Both forms are shown for reference and are **not executed**
+here, because each would make a network request:
+
+```{r}
+#| label: stage1-acs-live
+#| eval: false
+
+# Live form (needs a Census API key and network access):
+acs <- cacs_acs_prefetch(state = "AL", year = 2023)
+```
+
+```{r}
+#| label: stage2-iso-live
+#| eval: false
+
+# Live form (needs a routing provider; the OSRM public demo needs no key):
+iso <- cacs_isochrone(
+  sites       = cacs_alabama_sites,
+  drive_times = c(5, 10, 15),
+  provider    = "osrm",
+  osrm_mode   = "demo"
+)
+```
+
+`cacs_acs_prefetch()` returns an `sf` tibble of tract-level ACS estimates
+(`GEOID`, `NAME`, `variable`, `estimate`, `moe`, `geometry`), and
+`cacs_isochrone()` returns one drive-time polygon per `(site_id, drive_time_min)`
+pair. The two bundled fixtures used below are exactly those return shapes,
+frozen: `sample_alabama_subset.rds` stands in for the ACS prefetch, and
+`legacy_2025_isochrones.rds` stands in for the isochrones. Loading them lets us
+run the rest of the pipeline with no network at all.
+
+```{r}
+#| label: load-fixtures
+#| eval: true
+
+# These are exactly what stages 1 and 2 would have returned, frozen to disk.
+sites <- readRDS(system.file(
+  "extdata", "legacy_2025_sites.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+
+# Restrict to our three-site working batch and three drive-time bands.
+analysis_sites <- sites |>
+  filter(site_id %in% site_ids)
+iso <- iso |>
+  filter(site_id %in% site_ids, drive_time_min %in% c(5L, 10L, 15L))
+
+list(
+  acs_dim         = dim(acs),
+  acs_crs         = sf::st_crs(acs)$epsg,
+  acs_variables   = length(unique(acs$variable)),
+  acs_tracts      = length(unique(acs$GEOID)),
+  iso_dim         = dim(iso),
+  iso_crs         = sf::st_crs(iso)$epsg
+)
+```
+
+The ACS fixture carries `r length(unique(readRDS(system.file("extdata", "sample_alabama_subset.rds", package = "catchmentACS"))$variable))`
+source variables across the Alabama tracts in EPSG:4269; the isochrone fixture
+is a set of drive-time polygons in EPSG:4326. Those are the two coordinate
+systems `cacs_intersect_weight()` expects on input.
+
+### Stage 3: spatial intersection and area weighting
+
+This is the algorithmic heart of the package. `cacs_intersect_weight()` overlays
+each isochrone on the ACS tracts, computes how much of each tract falls inside
+the catchment, and aggregates the source ACS counts by that overlap. It runs
+fully offline:
+
+```{r}
+#| label: stage3-intersect
+#| eval: true
+
+weighted <- cacs_intersect_weight(
+  iso_sf        = iso,
+  acs_sf        = acs,
+  weight_method = "area",
+  verbose       = FALSE
+)
+
+dim(weighted)
+```
+
+```{r}
+#| label: stage3-read
+#| eval: true
+
+weighted |>
+  select(site_id, drive_time_min, variable, estimate, weight_sum, n_tracts) |>
+  arrange(site_id, drive_time_min, variable) |>
+  head(8)
+```
+
+Two columns are worth reading closely. `n_tracts` is how many tracts the
+catchment touched — your sample thickness. `weight_sum` is the sum of the tract
+area weights that went into the aggregate; each weight is the fraction of a
+tract's area lying inside the catchment,
+$\text{coverage\_wt}_j = \text{area}(\text{catchment} \cap \text{tract}_j) / \text{area}(\text{tract}_j)$.
+Because catchments slice through tract boundaries, `weight_sum` is generally not
+a whole number — a catchment covering most of three tracts and the edge of a
+fourth might sum to something like 3.4. That is the answer to a reviewer who
+asks why the effective tract count is not an integer: tracts enter partially, in
+proportion to how much of their area the drive-time area covers.
+
+The "Estimand families and weights" section of `?cacs_intersect_weight` documents
+the full weighting scheme. In short, count variables (`spatial_total`) use this
+coverage weight directly, while scalar and proxy variables (a median-income
+proxy, say) use a separate normalized mean weight that sums to one within a
+cell. The function also attaches an internal *carrier* table — the
+coverage-weighted numerator and denominator totals — that the next two stages
+read.
+
+### Stage 4: margin-of-error propagation
+
+ACS estimates ship with published margins of error (MOE), and those must travel
+through the weighting. `cacs_propagate_moe()` attaches an MOE to every row,
+choosing the formula appropriate to each variable's estimand family. It is pure
+computation:
+
+```{r}
+#| label: stage4-moe
+#| eval: true
+
+with_moe <- cacs_propagate_moe(weighted, verbose = FALSE)
+
+with_moe |>
+  select(site_id, drive_time_min, variable, estimate, moe,
+         moe_formula_effective) |>
+  arrange(site_id, drive_time_min, variable) |>
+  head(8)
+```
+
+A margin of error is the half-width of a 90% confidence interval — you report a
+value as `estimate ± moe`, exactly as the Census Bureau reports ACS figures.
+This stage does not recompute the point estimates; it fills in `moe` and records,
+per row, which formula was used (`moe_formula_effective`) and whether any
+fallback was needed (`moe_fallback`, `moe_fallback_reason`). We do not re-derive
+those formulas here — the four families and the never-silent fallback rule are
+documented in `?cacs_propagate_moe` and
+`vignette("methodology", package = "catchmentACS")`.
+
+One diagnostic habit: a non-trivial `moe_fallback_reason` is an audit signal, not
+an error. It records that a requested formula could not produce a value for a
+cell (for example a zero denominator or a missing input MOE) so the run stays
+transparent. In this intentionally clean mini-batch no fallback fires:
+
+```{r}
+#| label: stage4-fallback-check
+#| eval: true
+
+with_moe |>
+  filter(moe_fallback_reason != "n/a" | failure_origin != "none") |>
+  nrow()
+```
+
+### Stage 5: derive the curated rates
+
+Finally, `cacs_derive_rates()` appends the five curated catchment rates as new
+`derived_rate` rows beneath the source-variable rows, each as a ratio of
+area-weighted ACS totals with its own propagated MOE:
+
+```{r}
+#| label: stage5-rates
+#| eval: true
+
+final <- suppressWarnings(cacs_derive_rates(with_moe, verbose = FALSE))
+
+dim(final)
+```
+
+```{r}
+#| label: stage5-read
+#| eval: true
+
+final |>
+  filter(estimand_family == "derived_rate") |>
+  select(site_id, drive_time_min, variable, estimate, moe,
+         moe_formula_effective) |>
+  arrange(site_id, drive_time_min, variable) |>
+  head(10)
+```
+
+Each rate maps to an ACS numerator/denominator pair and to a policy reading:
+
+| Rate | ACS source | Policy reading |
+|---|---|---|
+| `poverty_rate` | `B17001_002 / B17001_001` | Catchment poverty — a demand-side proxy for Pre-K need |
+| `snap_rate` | `B22003_002 / B22003_001` | SNAP receipt — an administrative cross-check on household income stress |
+| `ssi_rate` | `B19056_002 / B19056_001` | Households with Supplemental Security Income — an equity dimension for disability/elderly-caregiver households |
+| `unemp_rate` | `B23025_005 / B23025_003` | Unemployment — parental labor-market attachment |
+| `labor_force_participation` | `B23025_002 / B23025_001` | Labor force participation — a supply-side (childcare-demand) proxy |
+
+The MOE formula for each rate is selected by `cacs_derive_rates()`'s
+`formula_dispatch` argument. Under the package's baseline policy, `poverty_rate`
+and `labor_force_participation` are C1-eligible (the `proportion_subset` form,
+valid when the numerator is a true subset of the denominator), while
+`snap_rate`, `ssi_rate`, and `unemp_rate` are routed to C2
+(`general_ratio_conservative`). A C1 rate whose subset variance comes out
+negative falls back to C2 for that cell, with the override recorded in
+`moe_fallback`, `moe_fallback_reason`, and `moe_formula_effective`. The full
+dispatch contract lives in `?cacs_propagate_moe` and `?cacs_derive_rates`.
+
+## Recompose into one call
+
+The five stages above are exactly what `cacs_run()` does internally. Supplying
+both `precomputed_isochrones =` and `acs =` tells it to skip the two network
+stages and use the fixtures we loaded, so this one call reproduces the manual
+chain offline — no requests, no key:
+
+```{r}
+#| label: recompose-run
+#| eval: true
+
+result <- cacs_run(
+  sites                  = analysis_sites,
+  state                  = "AL",
+  year                   = 2023,
+  drive_times            = c(5, 10, 15),
+  variables              = unname(cacs_acs_default_vars),
+  provider               = "osrm",
+  precomputed_isochrones = iso,
+  acs                    = acs,
+  weight_method          = "area",
+  output                 = "long",
+  verbose                = FALSE
+)
+
+class(result)
+dim(result)
+```
+
+The provenance attribute confirms the path taken: both inputs were supplied, so
+the orchestrator ran the 3-call path (validation, intersection/weighting, MOE
+propagation, rate derivation, output assembly) with no network.
+
+```{r}
+#| label: recompose-provenance
+#| eval: true
+
+attr(result, "cacs_run_provenance") |>
+  as.data.frame() |>
+  select(execution_path, provider, state, year,
+         weight_method, formula_dispatch, bypass_iso, bypass_acs)
+```
+
+And the result is identical to the hand-built chain — not merely close. Comparing
+the two estimate columns on the same `(site_id, drive_time_min, variable)` keys:
+
+```{r}
+#| label: recompose-equivalence
+#| eval: true
+
+manual <- final |>
+  arrange(site_id, drive_time_min, variable)
+oneshot <- tibble::as_tibble(result) |>
+  arrange(site_id, drive_time_min, variable)
+
+c(
+  same_nrow      = nrow(manual) == nrow(oneshot),
+  max_estimate_d = max(abs(manual$estimate - oneshot$estimate), na.rm = TRUE),
+  max_moe_d      = max(abs(manual$moe - oneshot$moe), na.rm = TRUE)
+)
+```
+
+That zero is the point of the first half of this exercise: the readable
+five-stage decomposition and the single production call are the same
+computation. In daily work you write the one line; the five stages are what you
+cite in a methods section. The rest of the article works from `result`.
+
+## Reporting-ready outputs
+
+This is the part that matters at hand-off. Everything below is a deliverable an
+equity researcher can drop into a memo, a dissertation chapter, or a journal
+submission — and each maps to a concrete reporting need.
+
+### Select the analyst-facing columns
+
+`result` is one tidy *long* table — one row per site, drive-time band, and
+variable — carrying provenance and audit fields that are useful when you share
+results and ignorable otherwise. Most daily analysis starts from a handful of
+columns, so name them once and reuse the selection. Read `failure_origin` first:
+`"none"` is your success flag for that cell.
+
+```{r}
+#| label: explore-columns
+#| eval: true
+
+result_tbl <- tibble::as_tibble(result, rate_first = FALSE)
+
+report_cols <- c(
+  "site_id", "drive_time_min", "variable",
+  "estimate", "moe", "n_tracts", "failure_origin"
+)
+
+result_tbl |>
+  select(all_of(report_cols)) |>
+  head(12)
+```
+
+This batch is intentionally clean, so every rate succeeds. In a larger live run,
+when a derived rate comes back `NA`, `failure_origin` names the stage that
+produced the gap — an upstream ACS input, an isochrone failure, an empty
+intersection, or a missing aggregation carrier — so you can diagnose rather than
+guess. The `estimate` for a rate is a proportion: `0.173` means 17.3%.
+
+### The site x drive-time rate matrix
+
+The most compact deliverable is one row per site and drive time with all five
+curated rates side by side. Pivoting the long table wide gives exactly the shape
+of a manuscript table:
+
+```{r}
+#| label: rate-matrix
+#| eval: true
+
+rate_matrix <- result_tbl |>
+  filter(
+    variable %in% names(cacs_acs_default_rates),
+    failure_origin == "none"
+  ) |>
+  select(site_id, drive_time_min, variable, estimate) |>
+  pivot_wider(names_from = variable, values_from = estimate) |>
+  arrange(site_id, drive_time_min)
+
+rate_matrix
+```
+
+This is the analyst's primary worktable: every site at every catchment band,
+with the five rates as columns. For a reader-facing version that pairs each rate
+with its uncertainty, `summary()` reshapes the same numbers into one row per site
+and drive time, each rate formatted as `estimate ± MOE`:
+
+```{r}
+#| label: rate-matrix-moe
+#| eval: true
+
+summary(result)$rates_per_site_moe
+```
+
+If a `<NA>` cell appears in a larger run, it is not a formatting error: it means
+the package could not form a stable numerator/denominator pair for that rate in
+that cell. Keep such cells visible in review tables rather than overwriting them
+with zero — a missing rate is a diagnostic, not an absence of need.
+
+### A 15-minute priority table
+
+A common policy task is to rank sites by need at the widest catchment. Here we
+sort the three sites by their 15-minute poverty rate, highest first — the kind of
+ordering that drives a "where to invest next" conversation.
+
+```{r}
+#| label: priority-table
+#| eval: true
+
+priority_15 <- result_tbl |>
+  filter(
+    drive_time_min == 15,
+    variable == "poverty_rate",
+    failure_origin == "none"
+  ) |>
+  arrange(desc(estimate)) |>
+  transmute(
+    rank         = row_number(),
+    site_id,
+    poverty_rate = estimate,
+    moe_90       = moe,
+    n_tracts_num
+  )
+
+priority_15
+```
+
+The estimate stays a proportion; multiply by 100 only at the final formatting
+step so any downstream arithmetic remains stable. Swap `poverty_rate` for
+`snap_rate` or `unemp_rate` to rank on a different indicator, or change
+`drive_time_min` to compare priorities at a tighter band.
+
+### A focal-site profile
+
+For a single-site memo the question is different: not "which site ranks highest?"
+but "how does this one site change as its catchment grows from 5 to 15 minutes?"
+The profile below shows all five curated rates across the three rings for one
+focal site, each with its margin of error and the implied confidence interval.
+
+```{r}
+#| label: focal-site-profile
+#| eval: true
+
+focal_site <- "AL_SITE_03"
+
+result_tbl |>
+  filter(
+    site_id == focal_site,
+    variable %in% names(cacs_acs_default_rates),
+    failure_origin == "none"
+  ) |>
+  arrange(variable, drive_time_min) |>
+  transmute(
+    variable,
+    drive_time_min,
+    estimate,
+    moe_90  = moe,
+    ci_low  = pmax(estimate - moe, 0),
+    ci_high = estimate + moe
+  )
+```
+
+Reporting each rate as `estimate ± moe_90` (or as the `[ci_low, ci_high]`
+interval shown here) is the same convention the Census Bureau uses for ACS
+figures, so a reviewer can read the catchment numbers exactly as they would read
+a published table.
+
+### An exportable report tibble
+
+Finally, reduce the object to a clean, CSV-ready table. Keep the MOE, the failure
+flag, and the effective MOE formula alongside the estimate so a reviewer can
+trace both uncertainty and any fallback behavior.
+
+```{r}
+#| label: export-shape
+#| eval: true
+
+export_tbl <- result_tbl |>
+  filter(variable %in% names(cacs_acs_default_rates)) |>
+  transmute(
+    site_id,
+    drive_time_min,
+    variable,
+    estimate,
+    moe_90                = moe,
+    estimate_pct          = 100 * estimate,
+    moe_90_pct            = 100 * moe,
+    failure_origin,
+    moe_formula_effective,
+    moe_fallback
+  ) |>
+  arrange(site_id, drive_time_min, variable)
+
+head(export_tbl, 15)
+```
+
+You would write this out with, for example,
+`readr::write_csv(export_tbl, "alabama_prek_rates.csv")`. Before publishing any
+narrative claim, filter or flag rows where `failure_origin != "none"`: a missing
+rate may still be a useful diagnostic, but it must not be read as zero.
+
+## Reproducibility and the frozen baseline
+
+The package ships a frozen regression baseline, `legacy_2025_golden_output.rds`:
+the full ten-site, three-band `cacs_run()` result captured once and committed to
+`inst/extdata`. Its role is to anchor reproducibility — the test suite recomputes
+the pipeline and verifies it against this baseline at a tight numerical
+tolerance, so an accidental change in any stage's arithmetic is caught before
+release.
+
+```{r}
+#| label: load-golden
+#| eval: true
+
+golden <- readRDS(system.file(
+  "extdata", "legacy_2025_golden_output.rds", package = "catchmentACS"
+))
+
+list(
+  class          = class(golden)[1],
+  dim            = dim(golden),
+  n_sites        = length(unique(golden$site_id)),
+  drive_times    = sort(unique(golden$drive_time_min))
+)
+```
+
+Its provenance records how it was produced — the same `cacs_run()` contract,
+captured on the 3-call (fixtures-only) path:
+
+```{r}
+#| label: golden-provenance
+#| eval: true
+
+attr(golden, "cacs_run_provenance") |>
+  as.data.frame() |>
+  select(execution_path, state, year, weight_method,
+         formula_dispatch, output_format, level)
+```
+
+What the guarantee means for you in practice: if you re-run the package on these
+bundled inputs and the recomputed estimates match the baseline within tolerance,
+your install reproduces the reference numbers exactly. That is the user-facing
+form of the regression check the maintainers run in CI — you can port a 2025-era
+analysis script onto this API and confirm the numbers did not move. A literal
+row-by-row comparison is only meaningful when it runs in a clean, offline-stable
+environment matching the one that produced the golden file (the same package
+version and spatial-library stack). The three-site batch above is a deliberately
+small slice for teaching, not the full-roster object the golden file records, so
+this article shows the baseline's shape and provenance rather than asserting a
+numeric diff; the faithful comparison belongs in the test suite, which performs
+it at the locked tolerance.
+
+## A map
+
+With the optional `leaflet` package installed, you can see one site's 15-minute
+catchment over its intersecting tracts. This chunk is gated on the namespace, so
+it is simply skipped when `leaflet` is absent, and it calls `leaflet::` rather
+than attaching the package.
+
+```{r}
+#| label: focal-map
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+# Focal site point and its 15-minute ring (both EPSG:4326).
+focal_pt   <- analysis_sites[analysis_sites$site_id == focal_site, ]
+focal_ring <- iso[iso$site_id == focal_site & iso$drive_time_min == 15, ]
+
+# Build a tract-level poverty rate from the source ACS counts, then keep only
+# the tracts the 15-minute ring touches. Everything stays offline.
+suppressMessages(sf::sf_use_s2(FALSE))
+
+pov <- acs |>
+  sf::st_drop_geometry() |>
+  filter(variable %in% c("B17001_001", "B17001_002")) |>
+  select(GEOID, variable, estimate) |>
+  tidyr::pivot_wider(
+    id_cols = GEOID, names_from = variable, values_from = estimate
+  ) |>
+  transmute(GEOID, poverty_rate = B17001_002 / B17001_001)
+
+tract_geom <- acs |>
+  filter(variable == "B17001_001") |>
+  select(GEOID) |>
+  left_join(pov, by = "GEOID") |>
+  sf::st_transform(4326)
+
+hit <- tract_geom[
+  sf::st_intersects(tract_geom, focal_ring, sparse = FALSE)[, 1],
+]
+
+pal <- leaflet::colorNumeric("YlOrRd", domain = hit$poverty_rate)
+
+leaflet::leaflet(hit) |>
+  leaflet::addProviderTiles("CartoDB.Positron") |>
+  leaflet::addPolygons(
+    fillColor = ~pal(poverty_rate), fillOpacity = 0.6,
+    weight = 0.5, color = "#666666",
+    label = ~sprintf("Tract %s: %.1f%%", GEOID, 100 * poverty_rate)
+  ) |>
+  leaflet::addPolygons(
+    data = focal_ring, fill = FALSE,
+    weight = 2, opacity = 0.8, color = "#c05621"
+  ) |>
+  leaflet::addCircleMarkers(
+    data = focal_pt, radius = 5, color = "#2b6cb0",
+    fillOpacity = 0.9, stroke = FALSE, popup = ~site_id
+  ) |>
+  leaflet::addLegend(
+    pal = pal, values = ~poverty_rate,
+    title = "Tract poverty rate",
+    labFormat = leaflet::labelFormat(transform = function(x) 100 * x, suffix = "%")
+  )
+```
+
+The blue dot is the site, the orange outline is its 15-minute drive-time area,
+and the shaded tracts are everything that area touches, colored by tract poverty
+rate. This is the per-tract picture that area weighting collapses into a single
+catchment estimate. For a deeper map-based walkthrough, see
+`vignette("visual-walkthrough", package = "catchmentACS")`.
+
+## Transition to a live run
+
+To move from this offline walkthrough to current Alabama data, drop the two
+bypass arguments. The same `cacs_run()` call then draws drive-time areas from the
+selected provider and pulls ACS variables through `tidycensus`:
+
+```{r}
+#| label: live-transition
+#| eval: false
+
+# One-time Census key setup:
+tidycensus::census_api_key("YOUR_KEY_HERE", install = TRUE)
+
+live_result <- cacs_run(
+  sites         = cacs_alabama_sites,   # the 10 bundled sites, or your own roster
+  state         = "AL",
+  year          = 2023,
+  drive_times   = c(5, 10, 15),
+  variables     = unname(cacs_acs_default_vars),
+  provider      = "osrm",
+  weight_method = "area",
+  output        = "long",
+  verbose       = TRUE
+)
+```
+
+A few notes for the live form:
+
+- **Census key and ACS years.** This release supports ACS 5-year end years
+  2009–2024 (2024 is the most recent vintage). A Census key is needed when the
+  ACS request is a live cache miss or `force_refresh = TRUE`; a warm ACS cache
+  hit, or supplying an explicit `acs =` object, needs no key.
+- **Weighting.** `weight_method = "area"` is the implemented method in this
+  release. `weight_method = "population"` is a reserved name that fails loud at
+  the orchestrator boundary before any network or spatial work begins — it is a
+  planned future extension, not an active path.
+- **Routing providers.** `"osrm"` is implemented (the public demo endpoint needs
+  no key but can be rate-limited), `"ors"` is implemented when the optional
+  `openrouteservice` package and an API key are present, and `"mapbox"` and
+  `"r5r"` are reserved fail-loud provider names.
+
+## Where to next
+
+- **The first run, in ten minutes**:
+  `vignette("getting-started", package = "catchmentACS")`.
+- **The math** behind area weighting and MOE propagation:
+  `vignette("methodology", package = "catchmentACS")`.
+- **Routing providers and credentials** — OSRM (default), ORS (optional, needs a
+  key), and the reserved Mapbox/r5r surfaces, plus the offline bypass:
+  `vignette("providers", package = "catchmentACS")`.
+- **Map-based inspection of one site**:
+  `vignette("visual-walkthrough", package = "catchmentACS")`.
+- **Every `cacs_run()` argument in detail**: `?cacs_run`. The pipeline functions
+  are `?cacs_acs_prefetch`, `?cacs_isochrone`, `?cacs_intersect_weight`,
+  `?cacs_propagate_moe`, and `?cacs_derive_rates`.
+
+Bug reports and feature requests:
+<https://github.com/joonho112/catchmentACS/issues>.

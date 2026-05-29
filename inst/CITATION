@@ -1,0 +1,9 @@
+bibentry(
+  bibtype = "Manual",
+  title   = "catchmentACS: Isochrone-Based Area-Weighted ACS Aggregation",
+  author  = person("JoonHo", "Lee", email = "jlee296@ua.edu",
+                   comment = c(ORCID = "0009-0006-4019-8703")),
+  year    = "2026",
+  note    = sprintf("R package version %s", meta$Version),
+  url     = "https://github.com/joonho112/catchmentACS"
+)

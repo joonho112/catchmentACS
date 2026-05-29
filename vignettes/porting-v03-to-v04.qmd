@@ -1,0 +1,266 @@
+---
+title: "Porting catchmentACS workflows to v0.4"
+vignette: >
+  %\VignetteIndexEntry{Porting catchmentACS workflows to v0.4}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  warning: false
+  message: false
+---
+
+This guide collects the four changes you need to know when moving a v0.3
+workflow to v0.4. v0.4 is an **adoption-readiness patch release**: it polishes
+the existing v0.3 surface so that a first-time user finds it "just works."
+Every v0.3 script continues to run on v0.4 **without modification**.
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+```
+
+::: {.callout-note}
+## About the code in this article
+
+The chunks below are **illustrative and not executed** (they assume Census,
+OSRM, or ORS access and are marked non-evaluated). The one chunk that runs only
+attaches the package; it makes no network calls, so this article renders fully
+offline. Copy a snippet into a live session to reproduce it.
+:::
+
+## Quick map
+
+| Area | v0.3 behavior | v0.4 change |
+|---|---|---|
+| `cacs_capture_conditions()` capturing a `<-` assignment | silent footgun (assignment lost) | new `return_value = "both"` argument |
+| OSRM default `res` on the demo server | `70L`, prone to HTTP 429 aborts | `30L` plus a once-per-session migration notice |
+| `cacs_run(output = "list_column")` `$isochrone` on the bypass path | `NULL` | populated from `precomputed_isochrones` |
+| `summary(run_result)$rates_breakdown` mean values | silently shifted (latent v0.2/v0.3 bug) | corrected |
+| `as_tibble(run_result)` row order | underlying long-output order (rates not lifted) | rate rows first within each site block |
+| `print(run_result)` rates preview | "Top-3 rates" (mean ± MOE) | "Top 5 rates (cross-site mean ± sd)" plus a per-site mini-block |
+| `summary(run_result)` slots | cross-site only | adds `rates_per_site` and `rates_per_site_moe`, keyed by site and drive time |
+| `cacs_summary_as_markdown()` per-site shape | not supported (manual pivot) | shape-detected, with caption |
+| OSRM endpoint pre-flight | not present | new exported `cacs_validate_osrm_endpoint()` helper |
+
+## Issue 001 — Capturing both the result and the conditions
+
+In v0.3 the pattern
+`cacs_capture_conditions(acs <- cacs_acs_prefetch(...))` was a silent footgun:
+the `<-` assignment never propagated to the caller's environment, so `acs` was
+lost. v0.4 offers two fixes.
+
+### Recommended (v0.4): `return_value = "both"`
+
+```{r}
+#| eval: false
+
+out <- cacs_capture_conditions(
+  cacs_acs_prefetch(state = "AL", year = 2023),
+  return_value = "both"
+)
+acs <- out$result        # the prefetch output
+nrow(out$conditions)     # how many water-tract messages were emitted
+```
+
+### Still valid (v0.3-compatible): `<<-` super-assignment
+
+```{r}
+#| eval: false
+
+acs <- NULL
+captured <- cacs_capture_conditions(
+  acs <<- cacs_acs_prefetch(state = "AL", year = 2023)
+)
+```
+
+The v0.4 default is `"conditions"` (the v0.3 behavior). To switch session-wide,
+set `options(catchmentACS.capture_return_value = "both")`.
+
+## Issue 002 — OSRM demo-safe default
+
+In v0.3, `cacs_isochrone(sites_sf, 10L, "osrm")` with `res` omitted often
+resolved to `res = 70L` on the demo server, which frequently triggered an
+HTTP 429 quota-exhaustion abort.
+
+In v0.4, when `osrm_mode = "demo"` (the default) and `res` is omitted, the call
+auto-downgrades to `res = 30L` and emits a once-per-session classed message.
+This lowers public-demo quota pressure, but depending on the endpoint's state
+you may still hit a 429 or a transient failure.
+
+```{r}
+#| eval: false
+
+# v0.4 default: 30L on demo (lower public-demo quota pressure), 70L on docker.
+iso <- cacs_isochrone(sites_sf, 10L, "osrm")  # demo by default -> res = 30L
+
+# Need the v0.3 res = 70L polygon quality? Request it explicitly:
+iso_hi <- cacs_isochrone(sites_sf, 10L, "osrm", res = 70L)
+
+# Or use a local OSRM container (no quota cost):
+iso_dk <- cacs_isochrone(sites_sf, 10L, "osrm", osrm_mode = "docker")  # 70L
+```
+
+### Pre-flight quota probe (new)
+
+```{r}
+#| eval: false
+
+state <- cacs_validate_osrm_endpoint()
+if (state$quota_ok) {
+  iso <- cacs_isochrone(sites_sf, 10L, "osrm")
+} else if (identical(state$http_status, 429L)) {
+  message("OSRM demo saturated; switching to docker.")
+  iso <- cacs_isochrone(sites_sf, 10L, "osrm", osrm_mode = "docker")
+} else {
+  message("OSRM probe inconclusive or unavailable; inspect state$http_status.")
+}
+```
+
+For the public `routing.openstreetmap.de` demo server, the pre-flight helper
+uses the profile-prefixed public-demo route path, e.g.
+`/routed-car/route/v1/driving/...`. Self-hosted OSRM endpoints keep the standard
+`/route/v1/driving/...` probe path. The returned `endpoint` column is the
+configured base server, not the internally expanded probe URL.
+
+### Disable the auto-downgrade
+
+```{r}
+#| eval: false
+
+options(catchmentACS.osrm_demo_budget_protect = FALSE)
+iso <- cacs_isochrone(sites_sf, 10L, "osrm")  # back to v0.3 res = 70L behavior
+```
+
+## Issue 003 — Self-contained list-column output
+
+In v0.3, `cacs_run(output = "list_column", precomputed_isochrones = iso, ...)`
+left the `$isochrone` list-column as `NULL`, so you had to carry the isochrone
+object separately to visualize it.
+
+In v0.4 the bypass path fills `$isochrone` automatically with the per-site `sf`
+row from `precomputed_isochrones`; the v0.3 manual-fill workaround is no longer
+needed.
+
+```{r}
+#| eval: false
+
+run_lc <- cacs_run(
+  sites = sites_sf, ...,
+  precomputed_isochrones = iso,
+  output = "list_column"
+)
+# v0.4: run_lc$isochrone[[1]] is now an sf row, not NULL.
+print(run_lc$isochrone[[1]])  # visualize directly
+```
+
+v0.5 extends the same `$isochrone` fill to the computed five-call path and the
+four-call-B path (`acs` supplied, isochrones computed). As a result,
+`output = "list_column"` and `output = "both"` both carry the isochrone row
+needed for visualization, on the precomputed and computed paths alike.
+
+## Issue 004 — Per-site rate matrix on all four surfaces
+
+In v0.3 the *most important deliverable* — the site × rate matrix — was hidden
+on all four S3 surfaces:
+
+- `print(run_result)`: only a cross-site "Top 5 rates (cross-site mean ± sd)".
+- `summary(run_result)`: only the cross-site `$rates_breakdown`.
+- `as_tibble(run_result)`: rate rows trailed behind the source ACS rows.
+- `cacs_summary_as_markdown()`: cross-site shape only.
+
+v0.4 exposes the per-site, per-drive-time matrix on *all four surfaces*, within
+zero clicks. A single internal helper is the single source of truth.
+
+### Track 1 — `summary()` slots and the `breakdown` argument
+
+```{r}
+#| eval: false
+
+sm <- summary(run_result)
+sm$rates_per_site         # tibble [n_keys x (key columns + 5)] — numeric
+sm$rates_per_site_moe     # same key shape, with "x +/- y" strings
+# Key columns are site_id and, when available, drive_time_min.
+
+# Explicit print control:
+sm_b <- summary(run_result, breakdown = "both")
+print(sm_b)               # cross-site and per-site together
+```
+
+### Track 2 — `print()` mini-block
+
+`print(run_result)` now shows a "Rates per site" mini-block automatically. The
+gating option is `getOption("catchmentACS.summary_per_site_max", 12L)`
+(default 12); set it to `0L` to disable.
+
+### Track 3 — `as_tibble()` rate-first
+
+```{r}
+#| eval: false
+
+tbl <- tibble::as_tibble(run_result)
+# v0.4 default: rate rows surface above the source ACS B-codes within each
+# (site_id, drive_time_min) block.
+
+# Disable the v0.4 rate-first lift and return the underlying long row order:
+tbl_v03 <- tibble::as_tibble(run_result, rate_first = FALSE)
+```
+
+### Track 4 — `cacs_summary_as_markdown()` per-site
+
+```{r}
+#| eval: false
+
+md <- cacs_summary_as_markdown(sm$rates_per_site)
+# "## Rates per site (estimate)" plus a pipe-Markdown table for Quarto/paper.
+
+md_moe <- cacs_summary_as_markdown(sm$rates_per_site_moe)
+# "## Rates per site (estimate +/- 90% MOE)" with "x +/- y" cells.
+```
+
+## Latent v0.2/v0.3 correctness fix
+
+A cross-surface invariant test added in v0.4 surfaced a **silent correctness
+bug present in v0.2 and v0.3**:
+
+- The `summary(run_result)$rates_breakdown$mean` values were *circularly
+  shifted*: each rate row's reported mean was actually the value belonging to
+  the *next* alphabetical position.
+- Cause: the `cacs_run_result` S3 class interfered with the group-key alignment
+  in dplyr's `group_by()` + `summarise()`.
+- v0.4 fix: internal aggregation uses a plain-tibble helper before dplyr, and
+  `dplyr::group_by(cacs_run_result, ...)` now strips the presentation class
+  before constructing the grouped data frame.
+
+**Action required for v0.3 users**: any `rates_breakdown` mean values you have
+already published or shared should be re-computed and verified against a v0.4
+build.
+
+## What did not change
+
+- The execution-path semantics of `cacs_run()` (five-call / three-call /
+  four-call).
+- The 14 entries in `cacs_acs_default_vars` and the 5 rates in
+  `cacs_acs_default_rates`.
+- The `cacs_intersect_weight(keep_tract_audit = TRUE)` attribute.
+- The issue-table contract of `cacs_validate_iso()`.
+- The five-method dispatch of `cacs_describe()`.
+- Every sanctioned v0.3 rate formula (in particular
+  `ssi_rate = B19056_002 / B19056_001`).
+- The cache-fingerprint sidecar contract.
+
+## Further reading
+
+- `vignette("getting-started", package = "catchmentACS")`
+- `vignette("alabama-tutorial", package = "catchmentACS")`
+- `vignette("providers", package = "catchmentACS")`
+- `vignette("porting-v01-to-v03", package = "catchmentACS")` — v0.1/v0.2 → v0.3
+- `vignette("porting-v04-to-v05", package = "catchmentACS")` — v0.4 → v0.5
+- `?cacs_capture_conditions`, `?cacs_isochrone`, `?cacs_validate_osrm_endpoint`,
+  `?summary.cacs_run_result`, `?cacs_summary_as_markdown`

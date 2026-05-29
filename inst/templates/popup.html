@@ -1,0 +1,34 @@
+<!-- ===========================================================================
+     Leaflet popup HTML templates for catchmentACS map outputs. Contains three
+     named sections (site, tract, rate) used to render marker and polygon
+     popups. User-supplied character values are HTML-escaped and numeric fields
+     are formatted deterministically by the package before interpolation.
+============================================================================ -->
+
+<!--BEGIN site-->
+<div class="cacs-popup cacs-popup-site">
+  <strong>Site:</strong> {{site_id}}<br/>
+  <strong>Name:</strong> {{site_name}}<br/>
+  <strong>Coords:</strong> {{lat}}, {{lon}}
+</div>
+<!--END site-->
+
+<!--BEGIN tract-->
+<div class="cacs-popup cacs-popup-tract">
+  <strong>GEOID:</strong> {{geoid}}<br/>
+  <strong>area_wt:</strong> {{area_wt}}<br/>
+  <strong>intersection_km2:</strong> {{intersection_km2}}
+  {{variable_rows}}
+</div>
+<!--END tract-->
+
+<!--BEGIN rate-->
+<div class="cacs-popup cacs-popup-rate">
+  <strong>Variable:</strong> {{variable}}<br/>
+  <strong>Estimate:</strong> {{estimate}}<br/>
+  <strong>MOE:</strong> {{moe}}<br/>
+  <strong>n_tracts (num/den):</strong> {{n_tracts_num}} / {{n_tracts_den}}<br/>
+  <strong>MOE formula:</strong> {{moe_formula}}<br/>
+  <strong>MOE fallback:</strong> {{moe_fallback}}
+</div>
+<!--END rate-->

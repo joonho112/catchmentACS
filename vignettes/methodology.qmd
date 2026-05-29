@@ -1,0 +1,474 @@
+---
+title: "Methodology: the pipeline as an estimator"
+vignette: >
+  %\VignetteIndexEntry{Methodology: the pipeline as an estimator}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    fig-width: 7
+    fig-height: 5
+    fig-align: center
+    out-width: "85%"
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+
+# Force network-free, deterministic builds: no provider/Census calls, no cache.
+old_options <- options(
+  catchmentACS.progress = "off",
+  catchmentACS.rate_first_default = FALSE
+)
+old_cache <- getOption("catchmentACS.cache_enabled", NULL)
+on.exit(options(old_options), add = TRUE)
+on.exit(options(catchmentACS.cache_enabled = old_cache), add = TRUE)
+cacs_set_cache(FALSE, scope = "session")
+```
+
+This article is the entry point to the package's **method track**. It frames the
+whole `catchmentACS` pipeline as a single statistical *estimator*, fixes the
+**notation** that the deeper theory articles reuse, names the six estimand
+families the package is built around, and shows — in real numbers, on the
+bundled fixtures — why a count and an average are aggregated with *different*
+weights. Where the applied articles answer "how do I run this?", this one
+answers "what, exactly, is being estimated, and by what formula?"
+
+It is deliberately math-light and does **not** re-derive the math: each estimand
+family and each margin-of-error (MOE) formula has a full derivation in a
+dedicated theory article, and this overview states the result and points there.
+The three companion articles are
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`,
+`vignette("theory-moe-propagation", package = "catchmentACS")`, and
+`vignette("theory-derived-rates", package = "catchmentACS")`. By the end you
+should be able to read any catchment estimate as
+$\text{estimate} \pm \text{MOE}$ and know which of six families produced it.
+
+If you want to *run* the pipeline rather than read its math, start with
+`vignette("getting-started", package = "catchmentACS")` and
+`vignette("alabama-tutorial", package = "catchmentACS")`.
+
+::: {.callout-note}
+## About the data in this article
+
+Every executable cell here is built entirely from the package's bundled
+`inst/extdata` fixtures — the synthetic `legacy_2025_*` objects and the
+`sample_alabama_subset` ACS extract — so this article renders with **no** Census,
+OSRM, ORS, or other network calls. These fixtures preserve the production calling
+contract (sites, drive-time polygons, tract-level ACS variables) but are
+**synthetic and illustrative**: they are included only for examples, tests, and
+reproducible package checks. They are **not** live Alabama policy estimates and
+must not be cited as real ACS results. Any real analysis requires a fresh live
+run (see `vignette("providers", package = "catchmentACS")`).
+:::
+
+## The pipeline is an estimator
+
+It helps to read the whole pipeline as one estimator. `cacs_run()` looks like a
+data-processing wrapper, but statistically it is one estimator with five stages.
+Two stages reach data sources; the last three are deterministic computation on
+whatever those returned:
+
+> `cacs_acs_prefetch()` (ACS download) → `cacs_isochrone()` (routing) →
+> `cacs_intersect_weight()` → `cacs_propagate_moe()` → `cacs_derive_rates()`.
+
+The estimand is a neighborhood characteristic *inside a drive-time catchment*.
+The ACS publishes its estimates on **census tracts**, which do not line up with
+catchments — a drive-time area slices through tract boundaries. So the estimator
+re-expresses tract-level published values as catchment-level values by
+**area-weighted aggregation**, then carries the published uncertainty through
+that aggregation. Concretely, for each site $s$:
+
+1. **Sites → catchments.** Take the drive-time isochrone polygon $I_s$ (drawn
+   fresh, or reused from precomputed polygons) and the ACS tract polygons $T_j$.
+2. **Catchments → tract overlaps.** Cut the intersections $I_s \cap T_j$ on an
+   equal-area projection, and from each intersection build a *weight* describing
+   how much of tract $j$ the catchment captures.
+3. **Overlaps → estimates.** Aggregate each tract-level estimate $Y_j$ (or
+   $X_j$) to the catchment with the weight that matches the variable's *estimand
+   family*.
+4. **Estimates → margins of error.** Propagate the published tract-level MOEs
+   through the same weights.
+5. **Estimates → rates.** Form the curated derived rates as ratios of aggregated
+   numerators and denominators, each with its own propagated MOE.
+
+The single function `cacs_run()` chains these stages; the five pipeline
+functions expose each one on its own. Two choices in steps 2–3 carry the entire
+statistical content of the package, and they are the reason the rest of this
+article exists: **which weight**, and **which family**. Get either wrong and the
+arithmetic still runs — it just estimates the wrong thing, silently.
+
+### Shared notation
+
+The whole method track uses the same symbols. Establishing them once here lets
+the three theory articles stay terse.
+
+| Symbol | Meaning |
+|---|---|
+| $I_s$ | the drive-time isochrone (catchment) polygon for site $s$ (a cumulative ring) |
+| $T_j$ | census tract $j$ |
+| $I_s \cap T_j$ | the part of tract $j$ that falls inside the catchment |
+| $\lvert\,\cdot\,\rvert$ | equal-area measure (area on EPSG:5070, in $\text{m}^2$) |
+| $Y_j$ | a tract-level **count** ACS estimate (extensive: persons, households) |
+| $X_j$ | a tract-level **scalar / proxy** ACS estimate (intensive: a median, a per-capita figure) |
+| $A_j, B_j$ | a ratio's numerator and denominator counts in tract $j$ |
+| $M_j$ | the published 90% margin of error for the tract-level estimate |
+
+Two weights do all the work. The **coverage weight** is the fraction of a
+tract's *area* captured by the catchment,
+
+$$
+w^{cov}_{sj} = \frac{\lvert I_s \cap T_j \rvert}{\lvert T_j \rvert},
+$$
+
+and the **normalized mean weight** is the catchment's intersection area for tract
+$j$ as a share of *all* its intersection area,
+
+$$
+w^{mean}_{sj} = \frac{\lvert I_s \cap T_j \rvert}{\sum_k \lvert I_s \cap T_k \rvert},
+\qquad \sum_j w^{mean}_{sj} = 1,
+$$
+
+so the mean weights sum to one within a site and drive-time cell. From these,
+the three estimator forms are
+
+$$
+\widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j,
+\qquad
+\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j,
+\qquad
+\widehat{R}_s = \frac{\sum_j w^{cov}_{sj}\, A_j}{\sum_j w^{cov}_{sj}\, B_j}.
+$$
+
+A **spatial total** allocates counts into the catchment with the coverage
+weight; a **scalar/proxy mean** blends intensive values with the normalized mean
+weight; a **derived rate** aggregates the numerator and denominator *each as a
+coverage total*, then divides. Throughout, standard errors and margins of error
+are interconvertible through the Census multiplier at the 90% level,
+
+$$
+M = 1.645\, SE, \qquad SE = \frac{M}{1.645},
+$$
+
+and every margin of error in the pipeline is reported at that level: variances
+accumulate on the SE scale and convert back at the end.
+
+## The six estimand families at a glance
+
+A variable's *estimand family* decides which weight aggregates it and which MOE
+path applies. This is the central methodological point of the package, and the
+spatial aggregation algorithm is built around it: a count and a median are
+aggregated by **different** weights, and using the wrong one is a silent
+statistical error, not a runtime failure.
+
+| Estimand family | Example variable | Point estimate | Weight |
+|---|---|---|---|
+| `spatial_total` | total population; persons in poverty (`B17001_002`) | $\widehat{Y}_s = \sum_j w^{cov}_{sj} Y_j$ | coverage $w^{cov}_{sj}$ |
+| `derived_rate` | poverty rate; SNAP rate | $\widehat{R}_s = \dfrac{\sum_j w^{cov}_{sj} A_j}{\sum_j w^{cov}_{sj} B_j}$ | coverage (numerator and denominator separately) |
+| `area_weighted_scalar_proxy` | per-capita income (`B19301_001`) | $\widehat{\bar X}_s = \sum_j w^{mean}_{sj} X_j$ | normalized mean $w^{mean}_{sj}$ |
+| `population_weighted_scalar_proxy` *(reserved)* | scalar proxy under population weighting | $\widehat{\bar X}_s = \sum_j w^{mean}_{sj} X_j$ | population-normalized mean |
+| `median_proxy` | tract median household income (`B19013_001`) | weighted blend of tract medians, **not** the true catchment median | normalized mean $w^{mean}_{sj}$ |
+| `metadata_only` | provenance fields | no numeric aggregation | none |
+
+Read the table by weight. An extensive **count** like *persons in poverty* must
+be *summed* into the catchment with the **coverage weight** — half a tract
+contributes half its people. An intensive **scalar** like *per-capita income*
+must be *averaged* with the **normalized mean weight** — half a tract does not
+contribute "half a dollar per person," so the contributions average rather than
+accumulate. Derived rates are a special case: numerator and denominator are each
+aggregated as coverage-weighted totals, then divided, so the rate inherits the
+coverage path. The `median_proxy` family is labelled a *proxy* on purpose — a
+weighted blend of tract medians is not the true median of the pooled catchment
+population, and the package keeps that caveat attached to the estimate.
+
+Add an intensive variable as if it were a count, or divide a count by a weight
+sum as if it were an average, and you get a number with no defensible
+interpretation. Nothing errors; the result is just wrong. The family classifier
+is what stops that from happening — and the next section shows the two paths
+diverging on actual fixture numbers.
+
+Two families are scaffolding rather than active estimators in this release. In
+`weight_method = "area"` (the implemented path), the area forms of the weights
+above are active. `population_weighted_scalar_proxy` and the population mean
+weight are a reserved future surface; `weight_method = "population"` fails loud
+at the orchestrator boundary today. `metadata_only` rows carry provenance and
+receive no numeric aggregation. The classifier and the per-family aggregation
+are documented in the "Estimand families and weights" section of
+`?cacs_intersect_weight`.
+
+## A worked example: coverage total vs mean proxy
+
+This is the section to read slowly. We take **one** site and **one** ring from
+the fixtures, look at the weights the package builds, and then watch a count and
+an average go through their two different aggregation paths — so the abstract
+$w^{cov}$-vs-$w^{mean}$ distinction lands as real numbers. The same contract
+scales to many sites and drive times.
+
+We use the synthetic site `AL_SITE_03` at a 15-minute drive time, whose
+catchment intersects three tracts. First, intersect and keep the per-tract audit
+so we can see the geometry ingredients:
+
+```{r}
+#| label: we-intersect
+#| eval: true
+
+# These fixtures are exactly the shapes stages 1-2 would have returned, frozen.
+sites <- readRDS(system.file(
+  "extdata", "legacy_2025_sites.rds", package = "catchmentACS"
+))
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_03"
+drive_time <- 15L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  keep_tract_audit = TRUE,
+  verbose          = FALSE
+)
+```
+
+The tract audit holds, for each tract the catchment touched, the intersection
+area and the tract area. From those two columns the package forms both weights.
+Computing them side by side makes the difference concrete:
+
+```{r}
+#| label: we-weights
+#| eval: true
+
+audit <- attr(weighted, "cacs_tract_audit") |>
+  transmute(
+    GEOID,
+    int_area_m2,
+    tract_area_m2,
+    w_cov  = int_area_m2 / tract_area_m2,            # coverage weight
+    w_mean = int_area_m2 / sum(int_area_m2)          # normalized mean weight
+  ) |>
+  arrange(desc(int_area_m2))
+
+audit
+
+c(
+  sum_w_cov  = sum(audit$w_cov),    # NOT constrained to 1
+  sum_w_mean = sum(audit$w_mean)    # constrained to 1 by construction
+)
+```
+
+Read the two sums. The coverage weights $w^{cov}_{sj}$ each measure *how much of
+that tract* the catchment captured, so they do **not** sum to one — here they
+sum to the effective number of tract-equivalents the catchment covers. The mean
+weights $w^{mean}_{sj}$ are renormalized to sum to exactly one. That single
+structural difference is what separates a *total* from an *average*.
+
+Now send a count through the coverage path. *Persons in poverty* (`B17001_002`)
+is a `spatial_total`, so the package reports
+$\widehat{Y}_s = \sum_j w^{cov}_{sj}\,Y_j$ with `weight_basis = "coverage"`:
+
+```{r}
+#| label: we-total
+#| eval: true
+
+weighted |>
+  filter(variable == "B17001_002") |>
+  select(variable, estimate, moe, weight_sum, n_tracts,
+         estimand_family, weight_basis)
+```
+
+The `weight_sum` column is exactly $\sum_j w^{cov}_{sj}$ — the same
+not-equal-to-one sum from the audit — and `estimate` is the coverage-weighted
+count of people in poverty across the three partial tracts. That is a total: it
+scales with how much area the catchment captures.
+
+Now send an *average* through. *Per-capita income* (`B19301_001`) is an
+`area_weighted_scalar_proxy`: an intensive, per-person quantity that must be
+*blended*, not summed. Its estimator is the normalized-mean-weighted average
+$$\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\,X_j,$$
+whose weights sum to one within a site and drive-time cell, so the result stays
+on the per-person scale and lies between the contributing tracts' own values.
+(For the implementation see `?cacs_intersect_weight`; for the full derivation see
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`.)
+
+The teaching moment is what happens if you ignore the family and aggregate this
+intensive variable *as if it were a count*. Below we pull the three tracts'
+published per-capita incomes and apply **both** weights by hand, so the contrast
+is self-contained and exact:
+
+```{r}
+#| label: we-silent-error
+#| eval: true
+
+pc_income <- acs |>
+  sf::st_drop_geometry() |>
+  filter(GEOID %in% audit$GEOID, variable == "B19301_001") |>
+  select(GEOID, X = estimate)
+
+demo <- audit |>
+  select(GEOID, w_cov, w_mean) |>
+  left_join(pc_income, by = "GEOID")
+
+demo
+
+c(
+  coverage_weighted_SUM = sum(demo$w_cov  * demo$X),   # wrong estimand for an average
+  mean_weighted_PROXY   = sum(demo$w_mean * demo$X)    # correct: stays on the $/person scale
+)
+```
+
+The two numbers tell the whole story. The **coverage-weighted sum** is `80169` —
+a dollar amount inflated past any single tract's value, because summing an
+intensive quantity is meaningless. It is not an income anyone earns. The
+**mean-weighted proxy** is `26723`, which stays on the per-person scale, between
+the tracts' own values, which is what a catchment "average per-capita income"
+should be. Both used identical geometry; only the *family-appropriate weight*
+differs. This is the silent estimand error the family classifier exists to
+prevent, and it is why `catchmentACS` refuses to apply one weight to everything.
+
+The MOE column moved with the estimate in both family rows above. How it is
+computed is the subject of the next section, in brief.
+
+## Margins of error in brief
+
+ACS estimates ship with a published 90% margin of error, and that uncertainty
+must travel through the aggregation. `cacs_propagate_moe()` attaches an MOE to
+every row by dispatching on the estimand family. There are **four** MOE formula
+families; this article only names them and states the conversion.
+
+- **Family A — weighted sum** (for `spatial_total`): the root-sum-square of the
+  coverage-weighted component MOEs.
+- **Family B — weighted mean** (for the `*_scalar_proxy` and `median_proxy`
+  families): the same root-sum-square form with the normalized mean weights,
+  which sum to one and are treated as fixed.
+- **Family C1 — proportion subset** (for a `derived_rate` whose numerator $A$ is
+  a true subset of its denominator $B$): the cross term is *subtracted*.
+- **Family C2 — general ratio, conservative** (the package's default for the
+  curated derived rates): the cross term is *added*, so the variance is always
+  non-negative.
+
+All four sit on the same conversion, $M = 1.645\, SE$: each component MOE is
+divided by $1.645$ to a variance, the variances are combined, and the result is
+multiplied back by $1.645$.
+
+The one branch worth flagging here is the **C1 → C2 fallback**, and that it is
+never silent. When a Family C1 (`proportion_subset`) calculation yields a
+negative subset variance, the row is recomputed with the Family C2
+(`general_ratio_conservative`) formula so a value is still produced, and the
+override is recorded per row: `moe_formula_effective` becomes
+`"general_ratio_conservative"`, `moe_fallback` is set to `TRUE`, and
+`moe_fallback_reason` records the cause. A single summary warning reports the
+counts at the end of a run.
+
+We do **not** derive these formulas here — including why variances accumulate on
+the SE scale and why the conservative ratio is the default. The full
+Family A/B/C1/C2 algebra, the independence assumptions, and the numerical guards
+live in `vignette("theory-moe-propagation", package = "catchmentACS")` and
+`?cacs_propagate_moe`.
+
+## Projection and the within-tract assumption
+
+Two modeling choices underpin every number above.
+
+**Equal-area measurement on EPSG:5070.** The coverage weight
+$w^{cov}_{sj} = \lvert I_s \cap T_j \rvert / \lvert T_j \rvert$ is a ratio of two
+areas, so it is only meaningful if numerator and denominator are measured in the
+*same* equal-area metric. The package transforms validated inputs to **EPSG:5070
+(NAD83 / CONUS Albers Equal Area)** once before measuring any area, so equal
+physical areas carry equal weight regardless of where in the catchment they
+fall. This is also why the current release is scoped to the contiguous United
+States plus DC, where Albers distortion is negligible.
+
+**Uniform-within-tract allocation.** Area weighting assumes the ACS
+characteristic is spread *uniformly* over each tract: a catchment that covers 30%
+of a tract's area is credited with 30% of its count. This is exact for area but
+only approximate for people, and it is the standard areal-interpolation
+assumption that a future `weight_method = "population"` mode is designed to
+relax.
+
+Both are stated only briefly here; the equal-area rationale and the
+uniform-within-tract assumption are argued in full in
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`.
+
+## Where the details live
+
+This article is the map; the derivations are in the three method-track articles
+and the function reference, each reusing the notation fixed above.
+
+- **Spatial aggregation** — the coverage vs mean weight derivation, the
+  per-site intersection algorithm, the full six-family aggregation table,
+  EPSG:5070, and the within-tract assumption:
+  `vignette("theory-spatial-aggregation", package = "catchmentACS")` and
+  `?cacs_intersect_weight`.
+- **MOE propagation** — the four formula families (A weighted sum, B weighted
+  mean, C1 proportion subset, C2 conservative general ratio), the SE ↔ MOE
+  relation, the never-silent C1 → C2 fallback, and the numerical guards:
+  `vignette("theory-moe-propagation", package = "catchmentACS")` and
+  `?cacs_propagate_moe`.
+- **Derived rates** — the five curated rates, their ACS numerator/denominator
+  pairs, the baseline C1/C2 policy, and the carrier-lookup mechanics:
+  `vignette("theory-derived-rates", package = "catchmentACS")` and
+  `?cacs_derive_rates`.
+
+For the record, each of the five curated rates maps to a fixed ACS numerator and
+denominator. `ssi_rate` is `B19056_002 / B19056_001` — households with
+Supplemental Security Income over the `B19056` household universe — and under the
+package's baseline policy `poverty_rate` and `labor_force_participation` are
+C1-eligible (`proportion_subset`), while `snap_rate`, `ssi_rate`, and
+`unemp_rate` route to C2 (`general_ratio_conservative`). The full catalogue and
+dispatch rationale are in
+`vignette("theory-derived-rates", package = "catchmentACS")`.
+
+For the applied, run-it path that produces reporting tables from these same
+fixtures, see `vignette("getting-started", package = "catchmentACS")`,
+`vignette("alabama-tutorial", package = "catchmentACS")`, and
+`vignette("providers", package = "catchmentACS")`.
+
+## Limitations
+
+The estimator's scope is deliberately narrow in this release.
+
+- **Area weighting only.** `weight_method = "area"` is implemented; the
+  population-weighted scalar-proxy family and `weight_method = "population"` are
+  a reserved fail-loud future surface. The uniform-within-tract assumption is
+  exact for area, approximate for population.
+- **Median is a proxy.** A `median_proxy` value is a weighted blend of tract
+  medians, not the true median of the pooled catchment population; it is labelled
+  as a proxy throughout.
+- **Conservative ratio MOE by default.** Derived-rate MOEs default to the Family
+  C2 general-ratio form; the tighter C1 subset form is opt-in for the C1-eligible
+  rates and falls back to C2 (never silently) when its variance goes negative.
+- **A fixed rate catalogue.** The five curated rates are locked; arbitrary
+  user-supplied ratios are deferred to a future release.
+- **CONUS + DC.** EPSG:5070 is the authoritative equal-area default for the
+  contiguous United States and DC; the data path is ACS 5-year tract data for one
+  state at a time, and other regions await a future CRS policy.
+- **Fixtures.** The bundled fixtures are synthetic and regression-oriented —
+  useful for examples and package checks, not a substitute for a fresh live run
+  when producing final analysis.
+
+The interpretive caution that frames all of the above: an isochrone's polygon
+area is provider- and snapshot-sensitive, so for policy reporting the tract
+membership, the weighted estimates, their margins of error, and the recorded
+provenance are more informative audit surfaces than raw polygon area alone. And,
+as the callout at the top stresses, the fixtures used here are synthetic — the
+numbers above illustrate the *method*, not Alabama.

@@ -1,0 +1,324 @@
+---
+title: "Visual walkthrough: one Birmingham catchment, four stages"
+vignette: >
+  %\VignetteIndexEntry{Visual walkthrough}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(sf)
+
+fixture <- readRDS(system.file("extdata", "visual_walkthrough_fixture.rds",
+                                package = "catchmentACS"))
+ANCHOR <- fixture$anchor_site
+ANCHOR
+```
+
+## Why a visual walkthrough
+
+`cacs_run()` hands you a tidy table: one row per site per rate, with an
+estimate and a margin of error. That table tells you *what* a site's
+neighborhood looks like, but it hides *how* the package got there — the
+drive-time polygon it drew, the Census tracts it clipped, and the weights it
+used to blend them. When a reviewer or co-author asks "how exactly did you
+turn one address into a poverty rate?", a table is a hard thing to point at.
+
+This article answers that question with maps. It opens up that one line of
+code and follows a single, real site — the **Vulcan statue in Birmingham,
+Alabama** (site `AL_BHM_01`, `Birmingham_Vulcan`, on Red Mountain just south
+of downtown, the same site exercised in the package's verified v0.3.0
+workflow run) — through the four spatial stages that turn one point on a map
+into neighborhood statistics:
+
+1. **Isochrone** — draw the area a family can reach from the site in ten
+   minutes of driving.
+2. **Intersection** — find every Census tract that area touches, and how much
+   of each one falls inside it.
+3. **Weighted variable** — pool one ACS variable across those tracts,
+   weighting each tract by its overlap.
+4. **Rates** — collapse the whole catchment into five headline rates, each
+   with a margin of error.
+
+Each stage is drawn as one interactive `leaflet` map, so you can *watch* the
+computation happen for a place you can picture. Where
+`vignette("getting-started", package = "catchmentACS")` shows the ergonomics
+of the one-line call, this article traces the geometry inside it. Every map is
+paired with a short **"what to look for"** note that names the exact spatial
+feature to read off the picture. We stay at the map level here; the math
+behind area weighting and MOE propagation lives in `?cacs_propagate_moe` and
+`vignette("methodology", package = "catchmentACS")`.
+
+::: {.callout-note}
+## The maps are a frozen real-data snapshot
+
+Every map below is built from one small bundled file,
+`visual_walkthrough_fixture.rds`, so this article renders fully **offline** —
+no Census, OSRM, ORS, or other network call is made. The snapshot holds *real*
+data: a real ten-minute OSRM drive-time isochrone around the Vulcan, plus the
+real surrounding Birmingham-area Census tracts and American Community Survey
+(ACS) estimates it overlaps, captured once and frozen so the figures reproduce
+exactly. It is one recognizable catchment, not a synthetic toy — but it is
+also a single moment in time, a teaching snapshot rather than a live policy
+estimate. A real analysis of your own sites needs a fresh live run against a
+routing provider and the Census API (see
+`vignette("providers", package = "catchmentACS")`). To reuse these maps on
+your own data, hand a `cacs_run()` result and its inputs to the same five
+plotting functions in place of `fixture`.
+:::
+
+## Stage 1 — the isochrone
+
+The first stage answers the most basic question: *what, spatially, is this
+site's catchment?* An **isochrone** is the drive-time catchment polygon: the
+area you can reach from the site within a set number of minutes. For the Vulcan
+we use a single **ten-minute** drive-time ring, so the map reads as one
+connected reachable area rather than a set of nested bands. The red marker is
+the site; click it to read its `site_id`, name, and coordinates. The shaded
+polygon is everywhere a car can get to in ten minutes on the road network. (In
+a live run, OSRM is the default routing provider, ORS is available with an API
+key, and Mapbox and r5r are reserved fail-loud names — see
+`vignette("providers", package = "catchmentACS")`.)
+
+```{r}
+#| label: stage1
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_isochrone(
+  site_id  = ANCHOR,
+  iso_sf   = fixture$iso_sf,
+  sites_df = fixture$sites_df
+)
+```
+
+**What to look for.** Read the *shape and reach* of the ten-minute polygon.
+Notice that it is not a tidy circle: it stretches along the interstates and
+arterials that radiate from Red Mountain and pinches in where the terrain or
+the street grid slows a driver down. That asymmetry is the whole point of a
+drive-time catchment — it follows the road network, not a compass, so it
+captures who can actually get to the site rather than who happens to live
+within a fixed radius. The polygon's footprint is the geographic area this site
+is, in effect, responsible for, and it is what the next three stages fill in
+with population data.
+
+## Stage 2 — intersection and area weight
+
+Stage 2 answers *how much of each Census tract falls inside the catchment?* The
+ten-minute polygon is overlaid on every tract it touches and intersected with
+them in an equal-area projection (EPSG:5070). Each tract is then shaded by its
+**area weight**,
+
+$$
+\text{area\_wt}_j \;=\;
+\frac{\text{area}\!\left(\text{catchment} \cap \text{tract}_j\right)}
+     {\text{area}\!\left(\text{tract}_j\right)},
+$$
+
+the fraction of that tract's land that sits inside the catchment, running from
+`0` (no overlap) to `1` (the tract is entirely inside). The shading uses a
+viridis scale locked to that fixed `[0, 1]` domain, so a given weight always
+reads as the same color. This weight is exactly the lever the next stage pulls
+when it blends tracts; its derivation lives in
+`vignette("methodology", package = "catchmentACS")`.
+
+```{r}
+#| label: stage2
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_intersection(
+  site_id  = ANCHOR,
+  iso_sf   = fixture$iso_sf,
+  tract_sf = fixture$tract_sf,
+  sites_df = fixture$sites_df
+)
+```
+
+**What to look for.** Dark tracts carry a high area weight: most or all of the
+tract lies inside the catchment, so it pulls hard on every downstream number.
+The interior tracts near the Vulcan should read dark — close to `1.0`, fully
+enclosed — while the **pale tracts trace the catchment boundary**: those are
+*slivers*, tracts the ten-minute polygon clips only at the edge, contributing
+just a fraction of their residents. Hover or click any tract to read its
+`GEOID` and exact `area_wt` in the popup. The contrast between the dark core
+and the pale rim is the visual fingerprint of area weighting, and it is what
+makes catchment estimates more honest than a crude "is the tract's centroid
+inside?" rule: a tract that is 18% inside is counted as 18% inside, not
+all-or-nothing.
+
+## Stage 3 — a weighted ACS variable
+
+Stage 3 answers *how is one ACS indicator distributed across the catchment?*
+Here we map `B17001_002`, the count of people with income below the poverty
+level. Because it is a count, `cacs_intersect_weight()` aggregates it as an
+area-weighted **sum**: a tract that is half inside the catchment contributes
+half of its poverty count. Each tract is drawn as a choropleth of its raw ACS
+`estimate`, with the ten-minute outline laid on top for reference. Each tract
+popup reports its `GEOID`, the variable code, the `estimate`, the margin of
+error (MOE — the half-width of the 90% confidence band the Census publishes
+with every ACS figure), the tract's `area_wt`, and `area_wt × estimate`, which
+is that tract's contribution to the site total.
+
+```{r}
+#| label: stage3
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_weighted(
+  site_id  = ANCHOR,
+  iso_sf   = fixture$iso_sf,
+  tract_sf = fixture$tract_sf,
+  acs_sf   = fixture$acs_sf,
+  variable = "B17001_002",
+  sites_df = fixture$sites_df
+)
+```
+
+**What to look for.** Read the *spread* of color across the tracts inside the
+outline. An even shade would mean poverty is roughly uniform across the
+catchment; a sharp dark-to-light gradient flags internal heterogeneity that a
+single catchment average would paper over. Cross-check the deepest-shaded
+tracts against Stage 2: a tract that is dark in *both* maps — a high poverty
+count **and** a high area weight — is the one driving the catchment poverty
+total hardest. That `area_wt × estimate` line in each popup is exactly the
+quantity Stage 4 sums up.
+
+::: {.callout-tip}
+## Mapping a different indicator
+
+Swap the `variable` argument for any code in your ACS data, and set
+`variable_family` to match so the palette and popup units stay correct. For
+example, `variable = "B19013_001"` with `variable_family = "median_proxy"` for
+median household income, or `variable = "B23025_005"` (the unemployed count)
+with the default `variable_family = "spatial_total"` for a count. The family
+controls the ColorBrewer palette and how the popup labels the value, so match
+it to the kind of measure: `"spatial_total"` for counts,
+`"area_weighted_scalar_proxy"` for scalar proxies, `"median_proxy"` for
+medians.
+:::
+
+## Stage 4 — the headline rates
+
+Stage 4 compresses the whole tract-level panel into one site and one popup.
+Click the site marker to read the five curated rates for this Birmingham
+catchment — `poverty_rate`, `snap_rate`, `ssi_rate`, `unemp_rate`, and
+`labor_force_participation` — each as an `estimate ± 90% MOE` band, alongside
+the count of contributing tracts for the numerator and denominator
+(`n_tracts_num`, `n_tracts_den`). The exact figures live in the popup; read
+them straight from the marker.
+
+```{r}
+#| label: stage4
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_rates(
+  site_id    = ANCHOR,
+  iso_sf     = fixture$iso_sf,
+  run_result = fixture$run_result,
+  sites_df   = fixture$sites_df
+)
+```
+
+**What to look for.** Read each rate together with the *width* of its `± MOE`
+band, which tells you how precisely the estimate is pinned down — a tight band
+is a confident number, a wide one is a number to quote carefully. Two flags in
+the popup mark the limits of reliability. First, if a rate's MOE had to be
+computed with the conservative *fallback* formula rather than the requested
+one, its name is prefixed with an asterisk. Second, if an estimate could not be
+formed at all — say a carrier variable failed to resolve on one side of the
+ratio — the cell comes back `NA`. For this clean Birmingham snapshot all five
+rates resolve normally, with no asterisks and no `NA`s, but those markers are
+the first things to scan for on a real run. The full NA-propagation rule is in
+the "Failure propagation" section of `?cacs_run`.
+
+## All four in one call: `cacs_plot_site_pipeline()`
+
+You rarely build the four maps by hand. `cacs_plot_site_pipeline()` runs all
+four stage functions above with one shared set of site and styling arguments
+and returns a single `cacs_site_plot_pipeline` object — a classed list of four
+`leaflet` widgets. Printing it does **not** draw anything; its `print()` method
+just lists the accessors, so you can render exactly the stage you want, at the
+console or in a Quarto chunk.
+
+```{r}
+#| label: pipeline
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+maps <- cacs_plot_site_pipeline(
+  site_id    = ANCHOR,
+  iso_sf     = fixture$iso_sf,
+  tract_sf   = fixture$tract_sf,
+  acs_sf     = fixture$acs_sf,
+  run_result = fixture$run_result,
+  sites_df   = fixture$sites_df,
+  variable   = "B17001_002"
+)
+print(maps)
+```
+
+```{r}
+#| label: pipeline-display
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+# Display any single stage by its accessor. We show the rate-summary stage
+# here because its one popup pulls together the entire upstream pipeline:
+# isochrone + intersection + area weighting + MOE propagation.
+maps$rates
+```
+
+All four accessors — `maps$isochrone`, `maps$intersection`, `maps$weighted`,
+and `maps$rates` — are ordinary `leaflet` HTML widgets, so you can save any of
+them to a standalone HTML report with `htmlwidgets::saveWidget()` or drop one
+straight into a Shiny `leafletOutput()` slot. See `?cacs_plot_site_pipeline`
+for the full argument list.
+
+## Interpretation guide: which question each stage answers
+
+The value of splitting the pipeline into four maps is that each one answers a
+different question — exactly how you want to narrate it in a policy report,
+because each map maps to a different reviewer concern.
+
+- **Stage 1 (isochrone)** — *"How far does my site's catchment reach?"* The
+  **accessibility** question. The shape and reach of the ten-minute polygon
+  show a decision-maker the geographic area the site is responsible for, and
+  whether the setting is dense-urban or sprawling.
+- **Stage 2 (intersection / area weight)** — *"How do my catchment and the
+  Census tracts overlap?"* The **methodological-transparency** question.
+  Showing the weight itself lets a reviewer verify, tract by tract, how much
+  each one feeds the downstream estimate, and see that edge slivers are
+  down-weighted rather than counted whole — no hidden all-or-nothing
+  assignment.
+- **Stage 3 (weighted variable)** — *"How is one indicator distributed inside
+  my catchment?"* The **spatial-heterogeneity** question. The tract choropleth
+  exposes internal disparities that a single catchment average would mask, and
+  points to the neighborhoods driving the total.
+- **Stage 4 (rates summary)** — *"What are my site's five headline rates, in
+  one line?"* The **final-reporting** question. Estimates ± MOE and
+  contributing tract counts fit in one popup and transfer cleanly to a report
+  table, while the fallback asterisk and any `NA` make the limits of each
+  estimate visible at the same moment.
+
+## Where to next
+
+- **Your first run in ten minutes**, the whole pipeline in one offline call:
+  `vignette("getting-started", package = "catchmentACS")`.
+- **A full reporting workflow** on Alabama sites, from the raw pipeline to
+  export-ready tables: `vignette("alabama-tutorial", package = "catchmentACS")`.
+- **The math** behind area weighting and MOE propagation:
+  `?cacs_propagate_moe` and `vignette("methodology", package = "catchmentACS")`.
+- **The four-stage builder in detail**: `?cacs_plot_site_pipeline`.
+- **Routing providers and credentials** — OSRM (default), ORS (optional, needs
+  a key), and the reserved Mapbox/r5r surfaces, plus how to take a walkthrough
+  like this one live: `vignette("providers", package = "catchmentACS")`.
+
+Bug reports and feature requests:
+<https://github.com/joonho112/catchmentACS/issues>.

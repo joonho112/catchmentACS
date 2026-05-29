@@ -1,0 +1,146 @@
+url: https://joonho112.github.io/catchmentACS
+
+template:
+  bootstrap: 5
+  bootswatch: cosmo
+  bslib:
+    primary: "#C44536"
+  math-rendering: katex
+
+llm-docs: false
+
+home:
+  title: "catchmentACS: Isochrone-Based Area-Weighted ACS Aggregation"
+  description: >
+    Generate drive-time isochrones around early-childhood program sites and
+    aggregate American Community Survey (ACS) census-tract estimates to those
+    catchments by area weighting, with propagated margins of error and curated
+    rate indicators. Built for Pre-K funding-equity analysis.
+
+authors:
+  JoonHo Lee:
+    href: https://github.com/joonho112
+
+footer:
+  structure:
+    left: developed_by
+    right: built_with
+
+navbar:
+  structure:
+    left: [intro, reference, articles, news]
+    right: [search, github]
+  components:
+    articles:
+      text: Vignettes
+      menu:
+      - text: "--- Applied Track ---"
+      - text: Getting started
+        href: articles/getting-started.html
+      - text: Alabama tutorial
+        href: articles/alabama-tutorial.html
+      - text: Providers
+        href: articles/providers.html
+      - text: Visual walkthrough
+        href: articles/visual-walkthrough.html
+      - text: "--- Method Track ---"
+      - text: Methodology
+        href: articles/methodology.html
+      - text: Spatial aggregation
+        href: articles/theory-spatial-aggregation.html
+      - text: MOE propagation
+        href: articles/theory-moe-propagation.html
+      - text: Derived rates
+        href: articles/theory-derived-rates.html
+      - text: "--- Migration ---"
+      - text: Porting from v0.1 to v0.3
+        href: articles/porting-v01-to-v03.html
+      - text: Porting from v0.3 to v0.4
+        href: articles/porting-v03-to-v04.html
+      - text: Porting from v0.4 to v0.5
+        href: articles/porting-v04-to-v05.html
+
+reference:
+- title: Package
+  desc: Package overview, the five-step pipeline, and where to start.
+  contents:
+  - catchmentACS-package
+- title: Core pipeline
+  desc: Generate isochrones, fetch or reuse ACS data, intersect catchments, propagate MOEs, and derive rates.
+  contents:
+  - cacs_run
+  - cacs_isochrone
+  - cacs_acs_prefetch
+  - cacs_intersect_weight
+  - cacs_propagate_moe
+  - cacs_derive_rates
+- title: Result summaries and descriptions
+  desc: Inspect pipeline outputs and convert results for tables or downstream dplyr workflows.
+  contents:
+  - cacs_describe
+  - cacs_summary_as_markdown
+  - summary.cacs_run_result
+  - print.cacs_run_result
+  - print.cacs_run_summary
+  - as_tibble.cacs_run_result
+  - group_by.cacs_run_result
+- title: Visual walkthrough helpers
+  desc: Build site-level leaflet views for isochrones, intersections, weighted ACS variables, and rates.
+  contents:
+  - cacs_plot_site_pipeline
+  - cacs_plot_site_isochrone
+  - cacs_plot_site_intersection
+  - cacs_plot_site_weighted
+  - cacs_plot_site_rates
+  - format.cacs_site_plot_pipeline
+  - print.cacs_site_plot_pipeline
+- title: Cache and configuration
+  desc: Configure and inspect package cache behavior.
+  contents:
+  - cacs_cache_dir
+  - cacs_set_cache
+  - cacs_get_cache_state
+  - cacs_clear_cache
+  - cacs_cache_status
+- title: Validation and conditions
+  desc: Validate ACS/isochrone inputs and capture structured package conditions.
+  contents:
+  - cacs_acs_validate
+  - cacs_validate_iso
+  - cacs_validate_osrm_endpoint
+  - cacs_capture_conditions
+  - catchmentACS-conditions
+- title: Rates, MOE helpers, and cumulative rings
+  desc: Reusable helpers for rate definitions, MOE conversion, and cumulative travel-time rings.
+  contents:
+  - cacs_acs_default_rates
+  - cacs_rings_to_cumulative
+  - cacs_se_to_moe
+  - cacs_moe_to_se
+- title: Bundled data
+  desc: Small package data objects and fixtures used in examples and tests.
+  contents:
+  - cacs_acs_default_vars
+  - cacs_alabama_sites
+
+articles:
+- title: Applied track
+  desc: Hands-on, workflow-first guides for running and reading catchment analyses.
+  contents:
+  - getting-started
+  - alabama-tutorial
+  - providers
+  - visual-walkthrough
+- title: Method track
+  desc: The mathematics behind the estimates, for methodologists.
+  contents:
+  - methodology
+  - theory-spatial-aggregation
+  - theory-moe-propagation
+  - theory-derived-rates
+- title: Migration
+  desc: Upgrading existing workflows across package versions.
+  contents:
+  - porting-v01-to-v03
+  - porting-v03-to-v04
+  - porting-v04-to-v05

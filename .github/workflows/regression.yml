@@ -1,0 +1,49 @@
+# Workflow: regression
+#
+# Derived from §44.5 sub-task (b) and §16.3 of the catchmentACS blueprint book.
+# Runs the §26 frozen Alabama regression suite (1,080-row golden output)
+# under three triggers:
+#   - main push       : smoke regression on every merge to main/master
+#   - nightly cron    : 04:00 UTC (= US Central 23:00) per §16.3
+#   - workflow_dispatch: manual opt-in run from the Actions UI
+#
+# `CACS_REGRESSION: true` is the env signal consumed by
+# tests/testthat/helper-skip.R :: skip_if_not_regression(). Without it the
+# regression suite is intentionally skipped (PR walltime budget per §16.3).
+
+on:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+name: regression
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    name: frozen-alabama-2025
+    env:
+      CACS_REGRESSION: true
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      _R_CHECK_FORCE_SUGGESTS_: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::devtools
+            any::testthat
+
+      - name: Run frozen Alabama regression suite
+        run: Rscript -e 'devtools::test(filter = "regression-2025-alabama")'

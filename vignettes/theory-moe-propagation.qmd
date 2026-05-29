@@ -1,0 +1,692 @@
+---
+title: "MOE propagation: margins of error"
+vignette: >
+  %\VignetteIndexEntry{MOE propagation: margins of error}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    fig-width: 7
+    fig-height: 5
+    fig-align: center
+    out-width: "85%"
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)
+
+# Force network-free, deterministic builds: no provider/Census calls, no cache.
+old_options <- options(
+  catchmentACS.progress = "off",
+  catchmentACS.rate_first_default = FALSE
+)
+old_cache <- getOption("catchmentACS.cache_enabled", NULL)
+on.exit(options(old_options), add = TRUE)
+on.exit(options(catchmentACS.cache_enabled = old_cache), add = TRUE)
+cacs_set_cache(FALSE, scope = "session")
+```
+
+This article is the **method-track** companion to
+`vignette("methodology", package = "catchmentACS")` that develops the
+*uncertainty* half of the estimator. The overview *names* the four
+margin-of-error (MOE) formula families and states the $M = 1.645\,SE$
+conversion; this article *derives* them — the SE/MOE relation, the weighted
+root-sum-square for sums and means, the two ratio-variance forms, the
+never-silent C1 → C2 fallback, and the numerical guards — and then does the
+thing the overview cannot: it **reproduces the package's MOE arithmetic by
+hand** on a bundled fixture and **triggers the fallback on purpose**, so a
+methodologist can confirm that the formulas on this page are the formulas the
+code runs. The reference page `?cacs_propagate_moe` is the implementation
+anchor; this article supplies the mathematics behind its "MOE formula families"
+section.
+
+It is written for a reader who wants the propagation model on the page: why
+variances must accumulate on the standard-error scale, why a weighted sum and a
+weighted mean share one combination rule, why a ratio has two variance formulas
+and which one is the default, and exactly what the package records when the
+tighter formula breaks down. We reuse the notation fixed in the overview without
+re-motivating it: the isochrone $I_s$, the tract $T_j$, the coverage weight
+$w^{cov}_{sj}$ and the normalized mean weight $w^{mean}_{sj}$, a tract-level
+count $Y_j$, a scalar $X_j$, a ratio's numerator and denominator counts
+$A_j, B_j$, and the published 90% tract margin of error $M_j$. The *spatial*
+half — how those weights are built and how the point estimates
+$\widehat{Y}_s$, $\widehat{\bar X}_s$, $\widehat{R}_s$ aggregate — is derived in
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`; this article
+takes the weights as given and carries the published uncertainty through them.
+
+::: {.callout-note}
+## About the data in this article
+
+Every executable cell here is built entirely from the package's bundled
+`inst/extdata` fixtures — the synthetic `legacy_2025_isochrones`,
+`legacy_2025_sites`, and `sample_alabama_subset` objects — so this article
+renders with **no** Census, OSRM, ORS, or other network calls. These fixtures
+preserve the production calling contract (sites, drive-time polygons,
+tract-level ACS variables) but are **synthetic and illustrative**: they are
+included only for examples, tests, and reproducible package checks. They are
+**not** live Alabama policy estimates and must not be cited as real ACS results.
+Any real analysis requires a fresh live run (see
+`vignette("providers", package = "catchmentACS")`).
+:::
+
+## Why MOE propagation needs its own algebra
+
+Every ACS estimate ships with a published margin of error, and a catchment
+estimate is a *function of many* such estimates — a weighted sum of tract counts,
+a weighted blend of tract scalars, a ratio of two aggregated totals. The
+published MOEs describe the uncertainty of the *inputs*; the question this
+article answers is how that uncertainty travels to the *output*. Dropping it is
+not an option: a coverage-weighted count of persons in poverty with no margin of
+error invites a false precision the underlying survey never claimed. Carrying it
+naively is just as wrong, because margins of error do not add — a sum of two
+estimates each with margin $M$ does not have margin $2M$.
+
+The propagation rule is the standard one for a linear (or locally linear)
+combination of approximately independent estimates: **variances add, margins of
+error do not.** So the whole apparatus reduces to three moves repeated in four
+guises — convert each component margin to a variance, combine the variances under
+the appropriate model, and convert the combined variance back to a margin. The
+four families differ only in *how* the variances combine: a weighted sum
+(Family A), a weighted mean (Family B), a subset proportion (Family C1), and a
+general ratio (Family C2). The U.S. Census Bureau's published guidance on
+approximating the margin of error of derived estimates (its ACS handbook for data
+users) gives all four; the package reimplements them so the formula, its guards,
+and its audit trail live in one place.
+
+Two modeling assumptions sit under everything below, and both are inherited from
+the spatial-aggregation model rather than introduced here. First, the tract-level
+ACS estimates entering a catchment aggregate are treated as **approximately
+independent**, which is what lets their variances add without covariance terms;
+this is the same assumption the Census Bureau's own sum-of-estimates
+approximation makes, and it is generally slightly conservative for positively
+correlated neighbors. Second, the **weights are treated as fixed** design
+quantities, not random — the coverage and mean weights are geometric ratios of
+measured areas, so they carry no sampling variance of their own. Both are stated
+plainly so a reader knows exactly what the margins below do and do not capture.
+
+## Standard errors, margins of error, and the 90% convention
+
+The U.S. Census Bureau publishes ACS uncertainty as a **margin of error** (MOE):
+the half-width of a confidence interval, reported at the **90%** level. An
+estimate $\widehat{\theta}$ ships as $\widehat{\theta} \pm M$, and the interval
+$[\widehat{\theta} - M,\; \widehat{\theta} + M]$ is the Bureau's 90% interval.
+The MOE is a *reported* quantity, but it is not the natural quantity for
+*combining* uncertainties — variances are. A margin of error and a standard
+error (SE) are interconvertible through a single confidence multiplier $z$,
+
+$$
+M = z\, SE, \qquad SE = \frac{M}{z},
+$$
+
+and at the 90% level the Census multiplier is
+
+$$
+z = 1.645,
+\qquad\text{so}\qquad
+M = 1.645\, SE, \qquad SE = \frac{M}{1.645}.
+$$
+
+The constant $1.645$ is the Bureau's official rounded value of the standard
+normal 95th percentile; the exact quantile $\Phi^{-1}(0.95) \approx 1.6448536$
+differs only in the fourth decimal place, and the package adopts the rounded
+$1.645$ at the default level so its output is byte-compatible with hand
+calculations done the Bureau's way. (The multiplier is configurable through the
+`level` argument; any other level resolves $z$ from the exact symmetric
+two-tailed normal quantile instead. Everything below is at the default
+$z = 1.645$.)
+
+**Why the SE scale matters.** Variances of independent quantities add; margins
+of error do not. If two independent estimates have margins $M_1$ and $M_2$, the
+margin of their sum is **not** $M_1 + M_2$. The correct route is to drop to the
+SE scale, where variances are additive, combine, and convert back:
+
+$$
+M_{\text{sum}}
+= z\, SE_{\text{sum}}
+= z \sqrt{SE_1^2 + SE_2^2}
+= z \sqrt{\left(\tfrac{M_1}{z}\right)^2 + \left(\tfrac{M_2}{z}\right)^2}.
+$$
+
+Every formula in this article is an instance of that pattern: **divide each
+component MOE by $z$ to a standard error, combine the standard errors (or
+variances) under an independence assumption, multiply the combined SE back by
+$z$.** The package exposes the two conversions directly as `cacs_se_to_moe()`
+and `cacs_moe_to_se()` (exact inverses at a given level), and both are NA-safe:
+a missing input returns `NA`, never a silent zero. Internally the same constant
+divides MOEs into variances at the start of each family's calculation and
+multiplies back at the end.
+
+```{r}
+#| label: se-moe-roundtrip
+#| eval: true
+
+# M = 1.645 * SE and its exact inverse, on the same vector. NA passes through.
+se  <- c(50, 100, NA)
+moe <- cacs_se_to_moe(se, level = 0.90)
+c(moe = moe, recovered_se = cacs_moe_to_se(moe, level = 0.90))
+```
+
+The first SE of `50` becomes a margin of `82.25`, the second `100` becomes
+`164.5`, and `cacs_moe_to_se()` recovers the originals exactly; the `NA` survives
+both directions. This round-trip is the backbone of every combination below.
+
+## Families A and B: the weighted root-sum-square
+
+The first two families propagate margins through a *linear* combination of tract
+estimates, and they share one closed form. They differ only in the weight that
+multiplies each component margin — and that weight is exactly the one the
+matching estimand family uses for its point estimate, so the uncertainty travels
+through the *same* geometry as the estimate.
+
+### Family A — spatial total (weighted sum of counts)
+
+A `spatial_total` is the coverage-weighted sum of tract counts,
+$\widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j$, with the coverage weight derived in
+the spatial-aggregation article. Each tract contributes $w^{cov}_{sj}\, Y_j$, an
+estimate whose standard error is $w^{cov}_{sj}\, (M_j / z)$, because a fixed
+weight scales an SE linearly. Under approximate independence the variances add,
+so the variance of the catchment total is the sum of the squared
+coverage-weighted component SEs, and the margin of error is that combined SE
+lifted back by $z$:
+
+$$
+M = z \sqrt{\sum_j \left(\frac{w^{cov}_{sj}\, M_j}{z}\right)^2}.
+$$
+
+This is a **root-sum-square of coverage-weighted component MOEs.** Read the
+structure: each published margin $M_j$ is divided by $z$ to a standard error,
+scaled by that tract's coverage weight (the fraction of the tract the catchment
+captured), squared and summed into a variance, and the result is square-rooted
+and multiplied by $z$ back to a margin. A tract captured whole
+($w^{cov}_{sj} = 1$) contributes its full margin; a tract clipped to a tenth of
+its area contributes a tenth of it. The root-sum-square — rather than a plain sum
+— is the arithmetic statement that independent errors partially cancel: the
+combined margin grows like the square root of the number of comparable terms, not
+linearly.
+
+### Family B — weighted scalar / proxy mean
+
+A scalar proxy — per-capita income, a median-income proxy — is the
+normalized-mean-weighted blend $\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j$,
+with the mean weights that sum to one within a site and drive-time cell. Because
+the mean weights are also fixed design quantities, the propagation is
+structurally identical to Family A; only the weight changes from $w^{cov}$ to
+$w^{mean}$:
+
+$$
+M = z \sqrt{\sum_j \left(\frac{w^{mean}_{sj}\, M_j}{z}\right)^2}.
+$$
+
+The single difference from Family A is the weight. The coverage weight allocates a
+*fraction* of each tract's amount and is unbounded in sum; the mean weight is a
+*share* that is pre-normalized to sum to one. So a Family-A margin scales with how
+much area the catchment captured, while a Family-B margin is a weighted average of
+component margins on the same per-unit scale as the proxy itself — consistent with
+the point estimate, which is a convex combination of the tract values. In both
+families the weight that appears in the margin is the *same* weight that appears
+in the point estimate: coverage for a total, normalized mean for a proxy. This is
+the propagation analogue of the central spatial-aggregation point — a count and an
+average are aggregated by different weights — and it is why a single
+root-sum-square form serves both with only the weight swapped. (The implementation
+carries a raw accumulated variance per component and an explicit `weight_basis` so
+the two paths never cross; the per-cell normalization for Family B is the
+package's responsibility, documented in `?cacs_intersect_weight`. A
+`metadata_only` row carries no estimate and therefore no margin.)
+
+The numerical check below verifies Family A by hand against the package on a
+catchment with genuinely partial coverage, so the weights actually bite.
+
+## Families C1 and C2: ratio variance, subset versus conservative
+
+A `derived_rate` is not linear in its inputs — it is a *ratio*
+$\widehat{R}_s = A/B$ of two aggregated coverage totals, where both the numerator
+total $A = \sum_j w^{cov}_{sj} A_j$ and the denominator total
+$B = \sum_j w^{cov}_{sj} B_j$ are random estimates carrying their own propagated
+variance from Family A. A ratio has no exact finite-sample variance, so
+propagation uses the standard first-order (delta-method) linearization, and the
+package offers the two forms the Census Bureau's handbook gives. Both are stated
+on the variance scale; the reported margin is recovered as
+$M = z\sqrt{\widehat{\mathrm{Var}}(A/B)}$ at the end. They differ by exactly one
+sign, and that sign is the hinge of both their statistical meaning and their
+numerical behavior.
+
+### Family C1 — proportion subset
+
+When the numerator $A$ is a true **subset** of the denominator $B$ — every person
+counted in $A$ is also counted in $B$, as persons in poverty are a subset of the
+population for whom poverty status is determined — the numerator and denominator
+errors are positively correlated, and the Bureau's proportion formula *subtracts*
+a cross term to credit that correlation:
+
+$$
+\widehat{\mathrm{Var}}(A/B)
+\approx \frac{\mathrm{Var}(A) - (A/B)^2\, \mathrm{Var}(B)}{B^2}.
+$$
+
+Subtracting the cross term makes this the *tighter* (smaller) of the two estimates
+when it is valid, which is the whole reason to use it: it does not double-count
+the shared sampling uncertainty the subset relationship guarantees. But the
+subtraction is also its fragility — the bracketed expression can go **negative**
+when the denominator's scaled variance $(A/B)^2\,\mathrm{Var}(B)$ exceeds the
+numerator's $\mathrm{Var}(A)$, in which case its square root is undefined and the
+formula returns no admissible variance. That edge case is handled in the next
+section, never silently.
+
+### Family C2 — general ratio (conservative)
+
+When the subset relationship is *not* guaranteed — an arbitrary ratio of two
+counts, or a derived rate where conservative reproducibility is preferred — the
+correct general form treats the numerator and denominator as approximately
+independent and *adds* the cross term:
+
+$$
+\widehat{\mathrm{Var}}(A/B)
+\approx \frac{\mathrm{Var}(A) + (A/B)^2\, \mathrm{Var}(B)}{B^2}.
+$$
+
+Note the **+** sign. Two consequences follow from that single change. First, this
+variance is **always non-negative**: a sum of two squared, non-negative terms can
+never go below zero, so Family C2 always yields an admissible margin. Second, it
+is the **conservative** estimate — by adding rather than subtracting the cross
+term, it never understates the uncertainty, at the cost of being slightly wide
+when the numerator really is a subset. This is exactly the trade the package makes
+for its curated derived rates: **Family C2 (`general_ratio_conservative`) is the
+default**, and the tighter Family C1 (`proportion_subset`) is applied only when a
+true subset relationship is asserted for a rate eligible for it. Among the five
+curated rates, the poverty rate and labor-force participation are the
+subset-eligible ones; the SNAP, SSI, and unemployment rates route to C2 by
+default. The full per-rate policy is derived in
+`vignette("theory-derived-rates", package = "catchmentACS")`.
+
+The sign is the entire distinction. A single character — the minus in C1, the
+plus in C2 — separates the tighter, subset-only formula from the conservative,
+always-defined one. Whether C1 is *allowed* to break down gracefully is the
+subject of the fallback.
+
+## The C1 → C2 fallback and the status columns
+
+The two ratio formulas are not independent choices made once at dispatch — they
+are connected by a guard. When a row is dispatched to Family C1 but its subset
+variance comes out **negative**, the package does not return a missing value, a
+silent C1 number, or a `NaN` a caller might miss. It **recomputes the margin with
+the always-non-negative Family C2 formula** so a defensible value is still
+produced, and — this is the design commitment — it **records the substitution per
+row** rather than hiding it. The fallback is never silent.
+
+`cacs_propagate_moe()` returns, for every row, both the formula the dispatch
+*asked for* and the formula it *actually used*:
+
+| Column | Meaning |
+|---|---|
+| `moe_formula_requested` | the formula the dispatch resolved for this row (here, `proportion_subset`) |
+| `moe_formula_effective` | the formula whose value was actually written (after any fallback) |
+| `moe_fallback` | `TRUE` when the effective formula overrode the request |
+| `moe_fallback_reason` | the cause: `negative_variance`, `zero_denominator`, `missing_moe`, or `n/a` |
+
+For the C1 → C2 case specifically, a row whose subset variance went negative is
+recorded as
+
+- `moe_formula_requested = "proportion_subset"` — the request is preserved,
+- `moe_formula_effective = "general_ratio_conservative"` — C2 produced the value,
+- `moe_fallback = TRUE`,
+- `moe_fallback_reason = "negative_variance"`.
+
+A clean C1 row that stayed positive keeps `moe_formula_effective =
+"proportion_subset"`, `moe_fallback = FALSE`, and `moe_fallback_reason = "n/a"`,
+and its requested and effective formulas agree. At the end of a run a **single
+summary** reports the total counts by reason, and a run-level provenance attribute
+records how many rows took each path, so the fallback is auditable in aggregate as
+well as per row. The point of keeping both `requested` and `effective` is that the
+row reads as a self-documenting audit record: *this row asked for the subset
+formula, its variance went negative, so the conservative formula produced the
+value.* An auditor reading the output five years later can reconstruct exactly
+which rows took which path without rerunning anything; no information is lost and
+nothing is repaired behind the analyst's back.
+
+The same `moe_fallback`/`moe_fallback_reason` mechanism also records the two
+*degenerate* outcomes that are not formula substitutions but value losses, covered
+next: a zero denominator and a missing input margin both yield `NA` with their own
+reason strings.
+
+## Numerical guards
+
+Five guards protect the formulas from the inputs real ACS data presents. They are
+implemented once, in the package's MOE helpers, so every family inherits the same
+behavior, and each leaves a visible trace rather than a silent number.
+
+- **Denominator near zero.** Families B and C divide by a weight sum or a
+  denominator estimate. When that divisor is within a small epsilon of zero (the
+  package uses the square root of machine epsilon, about $1.5 \times 10^{-8}$),
+  the result is set to `NA` rather than allowed to explode. For a ratio row this
+  is recorded as `moe_fallback_reason = "zero_denominator"` — the structural
+  reason an empty or near-empty catchment does not masquerade as a precise rate.
+- **Negative variance in a proportion.** The Family C1 subtraction can go below
+  zero; this is the trigger for the C1 → C2 fallback of the previous section,
+  recorded as `moe_fallback_reason = "negative_variance"`.
+- **Missing-margin propagation.** A missing component margin propagates to a
+  missing result rather than being silently treated as zero, preserving ACS
+  suppression as a signal. For a ratio row a missing numerator or denominator
+  margin yields `NA` with `moe_fallback_reason = "missing_moe"`.
+- **Non-negative C2 variance.** Because C2 adds rather than subtracts, its bracket
+  is provably $\ge 0$; it has no negative-variance branch and always yields a real
+  margin. This is what makes C2 a safe fallback target for C1.
+- **The multiplier is a fixed constant.** At the default 90% level $z = 1.645$ is
+  the Bureau's rounded value, not the exact normal quantile; this is a deliberate
+  choice for byte-level reproducibility against ACS-published margins, and the
+  roughly $5 \times 10^{-5}$ gap to $\Phi^{-1}(0.95)$ is absorbed within the
+  package's regression tolerance. Other confidence levels resolve $z$ at full
+  precision.
+
+The common thread is that none of these guards repairs silently. A zero
+denominator, a negative subset variance, and a missing margin each leave a typed
+trace in `moe_fallback_reason` and feed the end-of-run summary, so a degenerate
+input is always distinguishable in the output from a clean computation.
+
+## Numerical verification: the formulas match the package
+
+This is the section that earns a methodologist's trust. We do two checks against
+the *real* `cacs_propagate_moe()`, both offline on bundled fixtures, on a single
+catchment. First we reproduce a **Family A weighted root-sum-square** entirely by
+hand and assert it equals the package's reported margin to machine precision.
+Then, on the *same* catchment, we deliberately construct a derived-rate case whose
+**C1 subset variance is negative** and watch the package fall back to C2 —
+recording `moe_fallback = TRUE` and `moe_fallback_reason = "negative_variance"` —
+and we reproduce the C2 value by hand as well. If the formulas on this page were
+not the formulas the code runs, either check would fail.
+
+We build the catchment from the fixtures with `cacs_intersect_weight()`, exactly
+the shapes pipeline stages 1–2 would have produced. We pick a catchment whose
+coverage is *partial and uneven* so the weighted root-sum-square is genuinely
+exercised: `AL_SITE_17` at a 10-minute drive intersects three tracts — one fully
+enclosed and two clipped to about a ninth of their area.
+
+```{r}
+#| label: vf-intersect
+#| eval: true
+
+# These fixtures are exactly the shapes stages 1-2 would have returned, frozen.
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_17"
+drive_time <- 10L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+# keep_tract_audit exposes the per-tract coverage weights we recompute by hand.
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  keep_tract_audit = TRUE,
+  verbose          = FALSE
+)
+
+propagated <- cacs_propagate_moe(weighted, verbose = FALSE)
+```
+
+### Step 1 — reproduce a Family A weighted RSS by hand
+
+*Persons in poverty* (`B17001_002`) is a `spatial_total`, so its margin comes
+from Family A. The per-tract audit gives the coverage weight $w^{cov}_{sj}$
+(`area_wt`); we join each tract's **published** margin $M_j$ from the ACS fixture
+and assemble the inputs:
+
+```{r}
+#| label: vf-A-inputs
+#| eval: true
+
+VAR <- "B17001_002"
+
+audit <- attr(weighted, "cacs_tract_audit") |>
+  transmute(GEOID, w_cov = area_wt)
+
+published <- acs |>
+  sf::st_drop_geometry() |>
+  filter(GEOID %in% audit$GEOID, variable == VAR) |>
+  select(GEOID, M_j = moe)
+
+hand_A <- audit |>
+  left_join(published, by = "GEOID") |>
+  arrange(desc(w_cov))
+
+hand_A
+```
+
+Now the Family A formula, term by term: scale each published margin by its
+coverage weight, divide by $z$, square, sum, square-root, and multiply back by
+$z$ — $M = z\sqrt{\sum_j (w^{cov}_{sj} M_j / z)^2}$:
+
+```{r}
+#| label: vf-A-compute
+#| eval: true
+
+z <- 1.645
+
+per_tract_var <- (hand_A$w_cov * hand_A$M_j / z)^2  # (w * M / z)^2 per tract
+hand_moe_A    <- z * sqrt(sum(per_tract_var))       # z * sqrt(sum(...))
+
+list(
+  per_tract_var = round(per_tract_var, 4),
+  summed_var    = sum(per_tract_var),
+  hand_moe_A    = hand_moe_A
+)
+```
+
+The fully-enclosed tract dominates the combined variance; the two clipped tracts
+enter with small coverage weights (about a ninth) and contribute little even
+though their *raw* published margins are not small — exactly what the weighted
+form predicts, since the weight, not the raw margin, governs the contribution.
+Now the package's own row for the same variable:
+
+```{r}
+#| label: vf-A-compare
+#| eval: true
+
+pkg_A <- propagated |>
+  filter(variable == VAR) |>
+  select(variable, estimate, moe, moe_formula_effective, moe_fallback)
+
+pkg_A
+
+c(
+  moe_match    = isTRUE(all.equal(hand_moe_A, pkg_A$moe)),
+  moe_abs_diff = abs(hand_moe_A - pkg_A$moe)
+)
+```
+
+The package routed this count through `moe_formula_effective = "weighted_sum"`
+(Family A) with no fallback, and its reported `moe` — about `202.2` — **equals**
+the hand-computed weighted root-sum-square exactly, with an absolute difference
+of zero. The margin on this page and the margin in the code are the same
+arithmetic.
+
+### Step 2 — trigger the C1 → C2 fallback
+
+Now the fallback. The poverty rate's numerator `B17001_002` is a true subset of
+its denominator `B17001_001`, so it is C1-eligible; we will request the
+`proportion_subset` formula. To make the subset variance go **negative** in a
+fully controlled way, we take the real catchment and lower the numerator's
+accumulated variance well below the denominator's scaled variance
+$(A/B)^2\,\mathrm{Var}(B)$ — the configuration that drives C1's bracket below
+zero. The aggregation carriers (an attribute of the intersect output) hold each
+component's coverage total and accumulated variance; we copy them, shrink the
+numerator's variance, and attach a matching carrier and long row for the rate:
+
+```{r}
+#| label: vf-fb-build
+#| eval: true
+
+carr <- attr(weighted, "cacs_aggregation_carriers")
+
+num_code <- "B17001_002"  # poverty_rate numerator (subset)
+den_code <- "B17001_001"  # poverty_rate denominator (universe)
+
+A    <- carr$est_total[carr$variable == num_code]      # numerator total
+B    <- carr$est_total[carr$variable == den_code]      # denominator total
+VarB <- carr$var_total_raw[carr$variable == den_code]  # denominator variance
+p    <- A / B                                          # the proportion A / B
+
+# Force C1's bracket Var(A) - p^2 Var(B) below zero by setting the numerator's
+# accumulated variance to a quarter of the denominator's scaled variance.
+VarA_neg <- 0.25 * p^2 * VarB
+
+carr_fb <- carr
+carr_fb$var_total_raw[carr_fb$variable == num_code] <- VarA_neg
+
+# A carrier row keyed on the rate name so the long rate row passes the
+# carrier-key check; C1/C2 read the numerator/denominator ACS-code rows, not
+# this placeholder, so its numeric fields are inert.
+rate_carrier <- carr_fb[carr_fb$variable == num_code, , drop = FALSE][1, ]
+rate_carrier$variable        <- "poverty_rate"
+rate_carrier$estimand_family <- "derived_rate"
+rate_carrier$est_total       <- NA_real_
+rate_carrier$var_total_raw   <- 0
+rate_carrier$est_mean        <- NA_real_
+rate_carrier$var_mean_raw    <- 0
+carr_fb <- bind_rows(carr_fb, rate_carrier)
+
+# The long-format derived_rate row the formula will act on (built from a
+# spatial_total template so all canonical columns and types are present).
+rate_row <- weighted[weighted$variable == num_code, , drop = FALSE][1, ]
+rate_row$variable              <- "poverty_rate"
+rate_row$estimand_family       <- "derived_rate"
+rate_row$estimate              <- NA_real_
+rate_row$moe                   <- NA_real_
+rate_row$weight_basis          <- "coverage"
+rate_row$moe_formula_requested <- NA_character_
+rate_row$moe_formula_effective <- NA_character_
+rate_row$moe_fallback          <- NA
+rate_row$moe_fallback_reason   <- "n/a"
+
+weighted_fb <- bind_rows(weighted, rate_row)
+attr(weighted_fb, "cacs_aggregation_carriers")  <- carr_fb
+attr(weighted_fb, "cacs_schema_version")         <- "1.0"
+attr(weighted_fb, "cacs_aggregation_provenance") <-
+  attr(weighted, "cacs_aggregation_provenance")
+
+# Confirm we have genuinely created a negative subset variance:
+c(
+  Var_A_set         = VarA_neg,
+  scaled_Var_B      = p^2 * VarB,
+  C1_inside_bracket = VarA_neg - p^2 * VarB   # < 0 by construction
+)
+```
+
+The bracket $\mathrm{Var}(A) - (A/B)^2\,\mathrm{Var}(B)$ is negative, so C1 cannot
+produce a real margin. We now request `proportion_subset` for this rate through
+the locked `formula` argument and let the package decide:
+
+```{r}
+#| label: vf-fb-run
+#| eval: true
+
+propagated_fb <- cacs_propagate_moe(
+  weighted_fb,
+  formula = list(poverty_rate = "proportion_subset"),
+  verbose = FALSE
+)
+
+fb_row <- propagated_fb |>
+  filter(variable == "poverty_rate") |>
+  select(variable, estimate, moe,
+         moe_formula_requested, moe_formula_effective,
+         moe_fallback, moe_fallback_reason)
+
+fb_row
+```
+
+The status columns tell the whole story: `moe_formula_requested` is still
+`"proportion_subset"` (the request is preserved), but `moe_formula_effective` is
+`"general_ratio_conservative"`, `moe_fallback` is `TRUE`, and
+`moe_fallback_reason` is `"negative_variance"`. The fallback fired, and it is
+fully recorded — exactly the never-silent contract.
+
+### Step 3 — reproduce the C2 fallback value by hand
+
+The recorded margin should be the **C2** formula evaluated on the same inputs,
+$M = z\sqrt{\mathrm{Var}(A) + (A/B)^2\,\mathrm{Var}(B)}\,/\,|B|$, and the estimate
+should be the proportion $p = A/B$:
+
+```{r}
+#| label: vf-fb-verify
+#| eval: true
+
+hand_moe_C2 <- z * sqrt(VarA_neg + p^2 * VarB) / abs(B)
+
+c(
+  estimate_match = isTRUE(all.equal(p,           fb_row$estimate)),
+  moe_match      = isTRUE(all.equal(hand_moe_C2, fb_row$moe)),
+  moe_abs_diff   = abs(hand_moe_C2 - fb_row$moe)
+)
+```
+
+Both match exactly. The package's fallback margin equals the hand-computed C2
+root, and its estimate equals the proportion $A/B$. The run-level provenance
+attribute also counts the event:
+
+```{r}
+#| label: vf-fb-provenance
+#| eval: true
+
+attr(propagated_fb, "cacs_moe_provenance")$n_rows_fallback_c1_to_c2
+```
+
+One row took the C1 → C2 path, matching the single fallback we constructed.
+
+To summarize the check: a Family A weighted root-sum-square reproduced by hand
+equals the package's reported `spatial_total` margin to the floating-point floor
+on a partially-covered catchment; a deliberately negative C1 subset variance on
+the same catchment triggers the package's never-silent C1 → C2 fallback, recorded
+as `moe_formula_requested = "proportion_subset"`,
+`moe_formula_effective = "general_ratio_conservative"`, `moe_fallback = TRUE`,
+and `moe_fallback_reason = "negative_variance"`; and the resulting C2 margin and
+the $A/B$ estimate both reproduce by hand exactly. The formulas in this article
+and the arithmetic in the code are the same arithmetic, fallback included.
+
+## Where this sits
+
+This article derived and verified the uncertainty half of the estimator. Its
+companions cover the spatial half and the rate catalogue, and the methodology
+overview ties all three together; each reuses the notation fixed in the overview.
+
+- **The estimator overview**, with the shared notation, the six-family table,
+  and the four-family MOE summary this article expands:
+  `vignette("methodology", package = "catchmentACS")`. This article is the
+  derivation behind its margins-of-error section.
+- **Spatial aggregation** — the coverage and normalized mean weights this article
+  carries margins through, the per-site intersection algorithm, and the
+  point-estimate forms $\widehat{Y}_s$, $\widehat{\bar X}_s$, $\widehat{R}_s$:
+  `vignette("theory-spatial-aggregation", package = "catchmentACS")` and
+  `?cacs_intersect_weight`.
+- **Derived rates** — which of the curated rates are C1-eligible versus C2 by
+  baseline policy, their ACS numerator/denominator pairs, and the carrier-lookup
+  mechanics behind the ratio margins:
+  `vignette("theory-derived-rates", package = "catchmentACS")` and
+  `?cacs_derive_rates`.
+- **Function reference** — the four families, the C1 → C2 fallback, the full
+  status-column contract, the five numerical guards, and the `formula` and
+  `level` arguments are documented in `?cacs_propagate_moe`; the SE ↔ MOE
+  converters are `?cacs_se_to_moe` and `?cacs_moe_to_se`.
+
+For the applied, run-it path that produces reporting tables with margins of error
+from these same fixtures, see
+`vignette("getting-started", package = "catchmentACS")` and
+`vignette("alabama-tutorial", package = "catchmentACS")`.
