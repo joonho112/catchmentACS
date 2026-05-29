@@ -1,14 +1,25 @@
+# Local performance micro-budgets for the cache layer.
+#
+# These assert wall-clock budgets (expect_lt(elapsed, ...)) that are only
+# meaningful on a developer machine: shared CI runners and `covr` coverage
+# instrumentation slow execution unpredictably (often 2-10x), which makes the
+# tight micro-budgets (e.g. 100us per counter bump) flaky there. They therefore
+# skip on CI and under covr, and run only in a local interactive/dev test pass.
 perf_large_acs <- function(n = 18655L) {
   cache_acs_tbl(n)
 }
 
 test_that("PERF-CACHE-01 sha256 value fingerprint stays below local budget", {
+  skip_on_ci()
+  skip_on_covr()
   value <- perf_large_acs()
   elapsed <- unname(system.time(.cacs_cache_value_digest(value))[["elapsed"]])
   expect_lt(elapsed, 0.05)
 })
 
 test_that("PERF-CACHE-02 cache hit on large ACS fixture stays below local budget", {
+  skip_on_ci()
+  skip_on_covr()
   value <- perf_large_acs()
   with_test_cache({
     key <- cache_key_for("acs")
@@ -21,6 +32,8 @@ test_that("PERF-CACHE-02 cache hit on large ACS fixture stays below local budget
 })
 
 test_that("PERF-CACHE-03 cache status across namespaces stays below local budget", {
+  skip_on_ci()
+  skip_on_covr()
   with_test_cache({
     .cacs_cache_put(list(x = 1), cache_key_for("isochrone"), "isochrone")
     .cacs_cache_put(cache_acs_tbl(100), cache_key_for("acs"), "acs")
@@ -32,6 +45,8 @@ test_that("PERF-CACHE-03 cache status across namespaces stays below local budget
 })
 
 test_that("PERF-CACHE-04 counter bump loop stays below 100us per bump", {
+  skip_on_ci()
+  skip_on_covr()
   with_test_cache({
     elapsed <- unname(system.time({
       for (i in seq_len(10000L)) {
@@ -43,6 +58,8 @@ test_that("PERF-CACHE-04 counter bump loop stays below 100us per bump", {
 })
 
 test_that("PERF-CACHE-05 public counter tibble construction stays cheap", {
+  skip_on_ci()
+  skip_on_covr()
   with_test_cache({
     elapsed <- unname(system.time({
       for (i in seq_len(1000L)) {
@@ -54,6 +71,8 @@ test_that("PERF-CACHE-05 public counter tibble construction stays cheap", {
 })
 
 test_that("PERF-CACHE-06 clear reset keeps counters zero without scanning values", {
+  skip_on_ci()
+  skip_on_covr()
   with_test_cache({
     .cacs_cache_bump("hits", "isochrone")
     .cacs_cache_bump("misses", "acs")
@@ -65,6 +84,8 @@ test_that("PERF-CACHE-06 clear reset keeps counters zero without scanning values
 })
 
 test_that("PERF-CACHE-07 cache hit counter overhead preserves large-hit budget", {
+  skip_on_ci()
+  skip_on_covr()
   value <- perf_large_acs()
   with_test_cache({
     key <- cache_key_for("acs")
