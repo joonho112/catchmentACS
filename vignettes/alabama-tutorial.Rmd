@@ -1,0 +1,716 @@
+---
+title: "A worked example with Alabama Pre-K sites"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{A worked example with Alabama Pre-K sites}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5,
+  fig.align = "center",
+  out.width = "85%"
+)
+```
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)  # needed to subset the bundled sf objects with [
+library(tidyr)
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+The last three of the five functions that `cacs_run()` calls are run here one
+at a time, for three example sites. The result is then checked against a single
+call to `cacs_run()` and turned into tables for a report.
+
+The tables answer questions of the kind asked about Pre-K sites. What share of
+the people within a short drive of each site are below the poverty level, for
+example, and at which site is that share highest?
+
+## The sites and the example data
+
+`cacs_run()` needs a point for each site, with an identifier in a column
+`site_id`; `?cacs_run` describes the two forms it accepts. The package's
+dataset `cacs_alabama_sites` is a table of this kind. Its ten points were made
+from public coordinates of the centers of ten Alabama cities, each moved by a
+small random amount, less than 1 km. They are not the locations of Pre-K
+programs or of any other facility:
+
+```{r}
+#| label: preview-sites
+#| eval: true
+
+cacs_alabama_sites |>
+  sf::st_drop_geometry() |>
+  select(site_id, site_name, county_fips, region_label)
+```
+
+`cacs_run()` uses `site_id` and the points and ignores the other columns. The
+points are in longitude and latitude on WGS 84 (EPSG:4326), the coordinate
+reference system that `cacs_run()` requires for sites given as an sf object:
+
+```{r}
+#| label: preview-sites-geometry
+#| eval: true
+
+sf::st_crs(cacs_alabama_sites)$epsg
+
+# X is the longitude and Y the latitude of each point.
+data.frame(
+  site_id = cacs_alabama_sites$site_id,
+  sf::st_coordinates(cacs_alabama_sites)
+)
+```
+
+Building drive-time areas around these points needs a routing service, and
+downloading American Community Survey (ACS) estimates for census tracts needs a
+Census API key. The calculations in this article therefore use three other
+files installed with the package. `legacy_2025_sites.rds` holds 20 made-up
+sites, `AL_SITE_01` to `AL_SITE_20`. `legacy_2025_isochrones.rds` holds their
+drive-time areas for 5, 10, and 15 minutes, drawn as circles 5, 10, and 15 km
+in radius instead of by a routing service. `sample_alabama_subset.rds` holds
+made-up ACS estimates for 911 squares of about 9 km² that play the part of
+census tracts, each with a margin of error (MOE), the half-width of its 90
+percent confidence interval. The Census Bureau publishes the margins of error
+of ACS estimates at this level [@census2020understanding, chap. 7]. The
+squares lie apart from each other, so a circle takes in only a few of them.
+
+The site file uses the `site_id` values of `cacs_alabama_sites` for other
+points: `AL_SITE_07` and `AL_SITE_08` below are far from the points of the same
+names in `cacs_alabama_sites` (see `?cacs_alabama_sites`). The article uses three of
+the 20 sites, which keeps the tables short. `AL_SITE_07`, `AL_SITE_08`, and
+`AL_SITE_11` lie in Alabama, and none of the squares in their drive-time areas
+has a missing estimate, so every row of the results below has a value.
+
+```{r}
+#| label: choose-sites
+#| eval: true
+
+site_ids <- c("AL_SITE_07", "AL_SITE_08", "AL_SITE_11")
+```
+
+The package also installs `legacy_2025_golden_output.rds`, which holds some of
+the variables and rates of a `cacs_run()` result for the 20 example sites; one
+of the package's tests compares it with a new run. Its name refers to an
+analysis from 2025, but it was computed from the same made-up data as this
+article and says nothing about real places. Half of its rows are placeholders
+with `NA` values for population weighting, which is not implemented.
+
+## The five steps, one at a time
+
+`cacs_run()` calls five functions in turn: `cacs_acs_prefetch()`,
+`cacs_isochrone()`, `cacs_intersect_weight()`, `cacs_propagate_moe()`, and
+`cacs_derive_rates()`. The first two get the ACS estimates from the Census
+Bureau and the drive-time areas from a routing service, and the other three
+compute from those two results.
+
+### Steps 1 and 2: downloading and routing
+
+The first call needs a Census API key, and both need an internet connection:
+
+```{r}
+#| label: stage1-acs-live
+#| eval: false
+
+# Needs a Census API key and an internet connection.
+acs <- cacs_acs_prefetch(state = "AL", year = 2023)
+```
+
+```{r}
+#| label: stage2-iso-live
+#| eval: false
+
+# Needs the osrm package and an internet connection; the public OSRM server
+# needs no key.
+iso <- cacs_isochrone(
+  sites       = cacs_alabama_sites,
+  drive_times = c(5, 10, 15),
+  provider    = "osrm",
+  osrm_mode   = "demo"
+)
+```
+
+`cacs_acs_prefetch()` returns an sf table with one row for each tract and
+variable and the columns `GEOID`, `NAME`, `variable`, `estimate`, `moe`, and
+`geometry`. `cacs_isochrone()` returns an sf table with one row for each site
+and drive time. The two example files have the same columns, so the other three
+steps run on them as they would on downloaded data:
+
+```{r}
+#| label: load-fixtures
+#| eval: true
+
+# The three example files described above
+sites <- readRDS(system.file(
+  "extdata", "legacy_2025_sites.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+
+# Keep the three sites and the drive times of 5, 10, and 15 minutes.
+analysis_sites <- sites |>
+  filter(site_id %in% site_ids)
+iso <- iso |>
+  filter(site_id %in% site_ids, drive_time_min %in% c(5L, 10L, 15L))
+
+list(
+  acs_dim         = dim(acs),
+  acs_crs         = sf::st_crs(acs)$epsg,
+  acs_variables   = length(unique(acs$variable)),
+  acs_tracts      = length(unique(acs$GEOID)),
+  iso_dim         = dim(iso),
+  iso_crs         = sf::st_crs(iso)$epsg
+)
+```
+
+The ACS data hold `r length(unique(acs$variable))` variables for
+`r length(unique(acs$GEOID))` squares in NAD83 (EPSG:4269), and the drive-time
+areas are in WGS 84 (EPSG:4326): the two coordinate reference systems that
+`cacs_intersect_weight()` requires.
+
+### Step 3: overlapping tracts and their weights
+
+`cacs_intersect_weight()` finds the tracts, here the squares, that overlap each
+drive-time area and combines their estimates:
+
+```{r}
+#| label: stage3-intersect
+#| eval: true
+
+weighted <- cacs_intersect_weight(
+  iso_sf        = iso,
+  acs_sf        = acs,
+  weight_method = "area",
+  verbose       = FALSE
+)
+
+dim(weighted)
+```
+
+The result has a row for each site, drive time, and ACS variable. These are the
+rows for the 10-minute area of `AL_SITE_11`:
+
+```{r}
+#| label: stage3-read
+#| eval: true
+
+area_11 <- weighted |>
+  filter(site_id == "AL_SITE_11", drive_time_min == 10) |>
+  select(variable, estimate, weight_basis, weight_sum, n_tracts)
+
+area_11
+```
+
+A count, such as the total population (`B01003_001`), is the sum of the tract
+estimates, each multiplied by the tract's coverage weight: the share of the
+tract's area that lies inside the drive-time area (`weight_basis =
+"coverage"`). This assumes that whatever a variable counts is spread evenly over
+each tract. Median household income (`B19013_001`) and per capita income
+(`B19301_001`) are instead averages of the tract values, weighted by each
+tract's share of the overlapping area (`"area_mean"`). These weights ignore how
+many people live in each tract, so the average can be far from the median or
+per-person value of the drive-time area when the tracts differ in population
+density. The help page of `cacs_intersect_weight()` defines both weights, and
+`vignette("theory-spatial-aggregation", package = "catchmentACS")` explains
+their assumptions.
+
+`n_tracts` counts the tracts in the area, and `weight_sum` adds up their
+coverage weights. The two are equal only when every tract lies wholly inside
+the area. Here `n_tracts` is `r area_11$n_tracts[1]` and `weight_sum` is
+`r format(round(area_11$weight_sum[1], 2), nsmall = 2)`: the square around the
+site lies inside the 10-minute area, and two neighboring squares lie mostly
+outside it.
+
+### Step 4: margins of error
+
+`cacs_intersect_weight()` has already combined the margins of error of the
+tracts. `cacs_propagate_moe()` computes them again at the confidence level
+given by its argument `level`, 0.9 by default, and records the formula used
+for each row in `moe_formula_effective`:
+
+```{r}
+#| label: stage4-moe
+#| eval: true
+
+with_moe <- cacs_propagate_moe(weighted, verbose = FALSE)
+
+with_moe |>
+  select(site_id, drive_time_min, variable, estimate, moe,
+         moe_formula_effective) |>
+  arrange(site_id, drive_time_min, variable) |>
+  head(8)
+```
+
+At the default level, the estimates and margins of error are those of step 3.
+`weighted_sum`, used for counts, is the formula for the margin of error of a
+sum, applied to the tract margins of error multiplied by the coverage weights.
+`weighted_mean`, used for medians and per-person values, is the same formula
+with the area shares. Both treat the tract estimates as independent and the
+weights as fixed. `vignette("theory-moe-propagation", package = "catchmentACS")`
+gives the formulas and discusses these assumptions.
+
+### Step 5: rates
+
+`cacs_derive_rates()` adds five rows for each site and drive time, one for each
+rate in `cacs_acs_default_rates`, after the rows of the ACS variables. Each rate
+divides one weighted count by another, and its margin of error is computed from
+those of the two counts:
+
+```{r}
+#| label: stage5-rates
+#| eval: true
+
+final <- cacs_derive_rates(with_moe, verbose = FALSE)
+
+dim(final)
+```
+
+The rate rows are those whose `estimand_family`, the kind of quantity in the
+row, is `"derived_rate"`:
+
+```{r}
+#| label: stage5-read
+#| eval: true
+
+final |>
+  filter(estimand_family == "derived_rate") |>
+  select(site_id, drive_time_min, variable, estimate, moe,
+         moe_formula_effective) |>
+  arrange(site_id, drive_time_min, variable) |>
+  head(10)
+```
+
+By default, the margins of error of all five rates come from the ratio
+formula, recorded as `general_ratio_conservative`. The Census Bureau's handbook
+gives this formula for a ratio whose numerator is not part of its denominator
+[@census2020understanding, chap. 8]. The numerator of each rate is part of its
+denominator, so each rate is a proportion, for which the handbook gives the
+proportion formula; that formula never gives a wider margin of error than the
+ratio formula. The argument
+`formula_dispatch` of `cacs_derive_rates()` and `cacs_run()` chooses between
+the two: with `"auto"` or `"proportion_subset"`, `poverty_rate` and
+`labor_force_participation` use the proportion formula, and `snap_rate`,
+`ssi_rate`, and `unemp_rate` keep the ratio formula. A row for which the value
+under the square root of the proportion formula is negative gets the ratio
+formula instead, with `moe_fallback = TRUE`.
+`vignette("theory-derived-rates", package = "catchmentACS")` describes the five
+rates, gives both formulas, and explains why `unemp_rate` keeps the ratio
+formula.
+
+## The same result in one call
+
+`cacs_run()` runs the same five functions. The call below supplies the
+drive-time areas through `precomputed_isochrones` and the ACS data through
+`acs`, so `cacs_run()` skips the download and the routing and runs the last
+three functions on the example data:
+
+```{r}
+#| label: recompose-run
+#| eval: true
+
+result <- cacs_run(
+  sites                  = analysis_sites,
+  state                  = "AL",
+  year                   = 2023,
+  drive_times            = c(5, 10, 15),
+  variables              = unname(cacs_acs_default_vars),
+  provider               = "osrm",
+  precomputed_isochrones = iso,
+  acs                    = acs,
+  weight_method          = "area",
+  output                 = "long",
+  verbose                = FALSE
+)
+
+class(result)
+dim(result)
+```
+
+The estimates and margins of error are the same as those computed step by step
+above:
+
+```{r}
+#| label: recompose-equivalence
+#| eval: true
+
+manual <- final |>
+  arrange(site_id, drive_time_min, variable)
+oneshot <- tibble::as_tibble(result) |>
+  arrange(site_id, drive_time_min, variable)
+
+cols <- c("site_id", "drive_time_min", "variable", "estimate", "moe")
+all.equal(as.data.frame(manual)[cols], as.data.frame(oneshot)[cols])
+```
+
+The rest of the article works from `result`.
+
+## Tables for a report
+
+The tables below are made with dplyr and tidyr from `result`.
+
+### A plain table with the main columns
+
+`tibble::as_tibble()` turns `result` into a plain tibble, which keeps its rows
+in their order. The tables use seven of its columns:
+
+```{r}
+#| label: explore-columns
+#| eval: true
+
+result_tbl <- tibble::as_tibble(result)
+
+report_cols <- c(
+  "site_id", "drive_time_min", "variable",
+  "estimate", "moe", "n_tracts", "failure_origin"
+)
+
+result_tbl |>
+  select(all_of(report_cols)) |>
+  head(12)
+```
+
+In this result `failure_origin`, which records the step at which a row failed,
+is `"none"` on every row; `?cacs_run` lists its other values and explains how
+missing tract estimates show up in the result.
+
+### Rates by site and drive time
+
+`tidyr::pivot_wider()` turns the rate rows into a table with one row for each
+site and drive time and one column for each rate:
+
+```{r}
+#| label: rate-matrix
+#| eval: true
+
+rate_matrix <- result_tbl |>
+  filter(variable %in% names(cacs_acs_default_rates)) |>
+  select(site_id, drive_time_min, variable, estimate) |>
+  pivot_wider(names_from = variable, values_from = estimate) |>
+  arrange(site_id, drive_time_min)
+
+print(rate_matrix, width = Inf)
+```
+
+`summary(result)` holds the same rates in its element `rates_per_site`. Its
+element `rates_per_site_moe` writes each rate with its margin of error, rounded
+to three decimals:
+
+```{r}
+#| label: rate-matrix-moe
+#| eval: true
+
+print(summary(result)$rates_per_site_moe, width = Inf)
+```
+
+A rate that could not be computed for a site and drive time is `NA` in these
+tables.
+
+### Sites ranked by a rate
+
+The code below orders the three sites by the poverty rate of their 15-minute
+areas, highest first. This rate is the share of the people for whom poverty
+status is determined who are below the poverty level. The filter on
+`failure_origin` leaves out a site whose poverty rate is `NA` because routing
+failed or because a count or margin of error that the rate needs is missing:
+
+```{r}
+#| label: priority-table
+#| eval: true
+
+ranked_15 <- result_tbl |>
+  filter(
+    drive_time_min == 15,
+    variable == "poverty_rate",
+    failure_origin == "none"
+  ) |>
+  arrange(desc(estimate)) |>
+  transmute(
+    rank         = row_number(),
+    site_id,
+    poverty_rate = estimate,
+    moe_90       = moe
+  )
+
+ranked_15
+```
+
+Two estimates $\hat{p}_j$ and $\hat{p}_k$ differ at the 90 percent level when
+$|\hat{p}_j - \hat{p}_k| > 1.645 \sqrt{\mathrm{SE}_j^2 + \mathrm{SE}_k^2}$,
+where the standard error $\mathrm{SE}$ of each estimate is its margin of error
+at the 90 percent level divided by 1.645. This is the Census Bureau's test for
+comparing two estimates [@census2020understanding, chap. 7]. The code below
+applies it to each site and the next one in the ranking:
+
+```{r}
+#| label: ranking-test
+#| eval: true
+
+# Each site against the next one in the ranking, at the 90 percent level
+ranking_test <- ranked_15 |>
+  mutate(
+    se         = moe_90 / 1.645,
+    next_site  = lead(site_id),
+    difference = poverty_rate - lead(poverty_rate),
+    threshold  = 1.645 * sqrt(se^2 + lead(se)^2),
+    differ     = difference > threshold
+  ) |>
+  filter(!is.na(next_site)) |>
+  select(site_id, next_site, difference, threshold, differ)
+
+ranking_test
+```
+
+The poverty rate of `AL_SITE_07` exceeds that of `AL_SITE_08` by
+`r sprintf("%.1f", 100 * ranking_test$difference[1])` percentage points, more
+than the threshold of
+`r sprintf("%.1f", 100 * ranking_test$threshold[1])` points. The difference
+between `AL_SITE_08` and `AL_SITE_11`,
+`r sprintf("%.1f", 100 * ranking_test$difference[2])` points, is below its
+threshold of `r sprintf("%.1f", 100 * ranking_test$threshold[2])` points, so
+the test does not show that their poverty rates differ.
+
+The margins of error in this test come from the ratio formula, which
+`cacs_run()` uses for all five rates by default. With
+`formula_dispatch = "auto"`, `poverty_rate` uses the proportion formula where
+it can, and that formula never gives a wider margin of error. With the default
+margins of error, the test therefore finds no more differences than with those
+from `"auto"`, and it can find fewer. The code below computes the rates again
+with `"auto"` and repeats the test:
+
+```{r}
+#| label: ranking-test-auto
+#| eval: true
+
+# suppressWarnings() hides a warning that counts the rows for which the ratio
+# formula replaced the proportion formula.
+rates_auto <- suppressWarnings(
+  cacs_derive_rates(with_moe, formula_dispatch = "auto", verbose = FALSE)
+)
+
+ranking_auto <- rates_auto |>
+  filter(
+    drive_time_min == 15,
+    variable == "poverty_rate",
+    failure_origin == "none"
+  ) |>
+  arrange(desc(estimate)) |>
+  mutate(
+    se         = moe / 1.645,
+    next_site  = lead(site_id),
+    difference = estimate - lead(estimate),
+    threshold  = 1.645 * sqrt(se^2 + lead(se)^2),
+    differ     = difference > threshold
+  ) |>
+  select(site_id, moe, moe_fallback, next_site, difference, threshold, differ)
+
+ranking_auto
+```
+
+With `"auto"`, the margin of error of the 15-minute poverty rate of
+`AL_SITE_08` is `r sprintf("%.4f", ranking_auto$moe[2])` instead of
+`r sprintf("%.4f", ranked_15$moe_90[2])`. For `AL_SITE_07` and `AL_SITE_11`,
+the value under the square root of the proportion formula is negative, so
+their margins of error still come from the ratio formula
+(`moe_fallback = TRUE`). The difference between `AL_SITE_08` and `AL_SITE_11`,
+`r sprintf("%.1f", 100 * ranking_auto$difference[2])` points, is now above its
+threshold of `r sprintf("%.1f", 100 * ranking_auto$threshold[2])` points.
+Whether the test shows that these two poverty rates differ therefore depends on
+the formula for their margins of error.
+
+The test treats the two estimates as independent, which is reasonable when the
+two areas share no tract, as here, where the sites are far apart. Areas that
+overlap share tracts, and so do the areas of one site for different drive
+times; the Limitations section of
+`vignette("methodology", package = "catchmentACS")` explains what this means
+for the test. With many sites, the test is run on many pairs, so some of the
+differences it shows may be due to chance.
+
+### One site at three drive times
+
+The five rates of `AL_SITE_08` for its three drive-time areas, with their
+margins of error and 90 percent confidence intervals:
+
+```{r}
+#| label: focal-site-profile
+#| eval: true
+
+focal_site <- "AL_SITE_08"
+
+result_tbl |>
+  filter(
+    site_id == focal_site,
+    variable %in% names(cacs_acs_default_rates)
+  ) |>
+  arrange(variable, drive_time_min) |>
+  transmute(
+    variable,
+    drive_time_min,
+    estimate,
+    moe_90  = moe,
+    ci_low  = estimate - moe,
+    ci_high = estimate + moe
+  )
+```
+
+`ci_low` and `ci_high` are the ends of the 90 percent confidence interval, the
+estimate minus and plus its margin of error. Because each of the three areas
+lies inside the next larger one, the test above does not apply to the
+differences between them as it stands.
+
+The labor force participation rate of `AL_SITE_08` happens to be almost the
+same at all three drive times. The made-up values of each variable were drawn
+separately, so in one square of the 15-minute area the labor force
+(`B23025_002`) exceeds the population 16 years and over (`B23025_001`), of
+which it is part.
+
+### A table to save
+
+The last table keeps, for each rate, the estimate and its margin of error as
+proportions and as percentages. Its columns `failure_origin`,
+`moe_formula_effective`, and `moe_fallback` record whether and how the rate and
+its margin of error were computed:
+
+```{r}
+#| label: export-shape
+#| eval: true
+
+export_tbl <- result_tbl |>
+  filter(variable %in% names(cacs_acs_default_rates)) |>
+  transmute(
+    site_id,
+    drive_time_min,
+    variable,
+    estimate,
+    moe_90                = moe,
+    estimate_pct          = 100 * estimate,
+    moe_90_pct            = 100 * moe,
+    failure_origin,
+    moe_formula_effective,
+    moe_fallback
+  ) |>
+  arrange(site_id, drive_time_min, variable)
+
+head(export_tbl, 15)
+```
+
+`write.csv(export_tbl, "rates.csv", row.names = FALSE)` saves it as a CSV file.
+
+## A map
+
+The map below needs the leaflet package. It shows, on a web base map,
+`AL_SITE_08`, its 15-minute area, and the squares of the example data that
+overlap the area, shaded by their poverty rate:
+
+```{r}
+#| label: focal-map
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+# The site and its 15-minute area (both in EPSG:4326)
+focal_pt <- analysis_sites[analysis_sites$site_id == focal_site, ]
+area_15  <- iso[iso$site_id == focal_site & iso$drive_time_min == 15, ]
+
+# The poverty rate of each tract, from its ACS counts, for the tracts that
+# overlap the 15-minute area.
+pov <- acs |>
+  sf::st_drop_geometry() |>
+  filter(variable %in% c("B17001_001", "B17001_002")) |>
+  select(GEOID, variable, estimate) |>
+  tidyr::pivot_wider(
+    id_cols = GEOID, names_from = variable, values_from = estimate
+  ) |>
+  transmute(GEOID, poverty_rate = B17001_002 / B17001_001)
+
+tract_geom <- acs |>
+  filter(variable == "B17001_001") |>
+  select(GEOID) |>
+  left_join(pov, by = "GEOID") |>
+  sf::st_transform(4326)
+
+squares <- tract_geom[
+  sf::st_intersects(tract_geom, area_15, sparse = FALSE)[, 1],
+]
+
+pal <- leaflet::colorNumeric("YlOrRd", domain = squares$poverty_rate)
+
+leaflet::leaflet(squares) |>
+  leaflet::addProviderTiles("OpenStreetMap") |>
+  leaflet::addPolygons(
+    fillColor = ~pal(poverty_rate), fillOpacity = 0.6,
+    weight = 0.5, color = "#666666",
+    label = ~sprintf("Tract %s: %.1f%%", GEOID, 100 * poverty_rate)
+  ) |>
+  leaflet::addPolygons(
+    data = area_15, fill = FALSE,
+    weight = 2, opacity = 0.8, color = "#c05621"
+  ) |>
+  leaflet::addCircleMarkers(
+    data = focal_pt, radius = 5, color = "#2b6cb0",
+    fillOpacity = 0.9, stroke = FALSE, popup = ~site_id
+  ) |>
+  leaflet::addLegend(
+    pal = pal, values = ~poverty_rate,
+    title = "Tract poverty rate",
+    labFormat = leaflet::labelFormat(transform = function(x) 100 * x, suffix = "%")
+  )
+```
+
+The blue dot is the site, and the orange outline is its 15-minute area, a
+circle with a 15 km radius in the example data. The three shaded squares are
+the tracts from which the estimates for this area come; the rest of the circle
+holds no square and adds nothing to them.
+`vignette("visual-walkthrough", package = "catchmentACS")` maps each step for
+one site in Birmingham, with a drive-time area built by OSRM and ACS estimates
+for real tracts.
+
+## Running on your own sites
+
+With your own sites in `sites` and without `precomputed_isochrones` and `acs`,
+the call to `cacs_run()` above builds the drive-time areas with the routing
+service named in `provider` and downloads the ACS data. This needs the osrm
+package, a Census API key, and an internet connection; the routing services,
+the API keys, and the cache that keeps downloaded data and drive-time areas for
+later calls (by default, until the R session ends) are the subject of
+`vignette("providers", package = "catchmentACS")`. The tables in this article
+then come out the same way, with the estimates of real tracts in place of the
+made-up ones.
+
+## References
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```

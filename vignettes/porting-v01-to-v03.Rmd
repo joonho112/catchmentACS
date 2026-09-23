@@ -1,0 +1,400 @@
+---
+title: "Updating code written for versions 0.1 and 0.2"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+vignette: >
+  %\VignetteIndexEntry{Updating code written for versions 0.1 and 0.2}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+Scripts written for catchmentACS 0.1 or 0.2 can stop with an error under
+version 0.5.1, or run and give different results.
+`vignette("porting-v03-to-v04", package = "catchmentACS")` and
+`vignette("porting-v04-to-v05", package = "catchmentACS")` describe the changes
+of versions 0.4 and 0.5 in more detail.
+
+Several errors about drive-time areas (isochrones), such as a missing column or
+the wrong coordinate reference system, refer to this article. The section on
+saved drive-time areas explains them.
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+Two files that ship with the package stand in for data of your own.
+`fixture_032_3site_fresh.rds` holds the inputs and results of a run with
+version 0.2 for three points at public places in Birmingham, Mobile, and
+Huntsville, Alabama: 10-minute areas from the public OSRM (Open Source Routing
+Machine) demo server and American Community Survey (ACS) estimates for
+2019–2023. The second file, `legacy_2025_isochrones.rds`, holds circles around
+20 made-up sites, used here as drive-time areas that pass the current checks.
+
+```{r}
+#| label: read-data
+#| eval: true
+
+# Inputs and results of a run with version 0.2
+old_run <- readRDS(system.file(
+  "testdata", "fixture_032_3site_fresh.rds",
+  package = "catchmentACS", mustWork = TRUE
+))
+
+# Drive-time areas saved with version 0.2
+old_areas <- old_run$iso_sf_v2
+
+# Drive-time areas that pass the current checks
+example_areas <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds",
+  package = "catchmentACS", mustWork = TRUE
+))
+```
+
+## Summary of changes
+
+::: {style="overflow-x: auto;"}
+
+| Version | Change | Effect on an older script | What to do |
+|:--|:--|:--|:--|
+| 0.3 | Drive-time areas need a `ring_topology` column equal to `"cumulative"` | Saved areas give an error | Add the column, or join bands with `cacs_rings_to_cumulative()` |
+| 0.3 | `cacs_isochrone()` joins the bands that the osrm package returns for several drive times into cumulative areas | Saved areas built with OSRM for several drive times may be bands, and the estimates for their longer drive times then cover only a band | Check them as below; build them again, or join them with `cacs_rings_to_cumulative()` after adding `isomin` and `isomax` |
+| 0.3, 0.4 | Without `res`, OSRM areas use `30L` with `osrm_mode = "demo"` (the default) and `70L` with `osrm_mode = "docker"` (50 in version 0.2) | New areas differ from the old ones | Set `res = 50L` for the grid of version 0.2 (`iso_args = list(res = 50L)` in `cacs_run()`) |
+| 0.3 | `ssi_rate` was `B19056_001 / B11001_001` and is now `B19056_002 / B19056_001` | Old values cannot be compared, and ACS data downloaded with the default variables of version 0.2 give `NA` | Download the ACS data again |
+| 0.5 | The weights that average medians and per-person values sum to one for each variable | Old values from a call with more than one variable are too small: when every tract has all of them, an old value is the correct one divided by the number of variables | Compute them again |
+| 0.4 | The rows of `rates_breakdown` in `summary()` are no longer shifted | Old means, standard deviations, and counts of missing values belong to other rates | Compute them again |
+| 0.4 | `tibble::as_tibble()`, and functions that call it, put the rows of the five rates first within each site and drive time | In versions 0.4 to 0.5.1, rows picked by position after `tibble::as_tibble()` differed, and `dplyr::semi_join()`, `dplyr::anti_join()`, and summaries after `dplyr::rowwise()` could give wrong results without a warning | Nothing from version 0.6.0 on, which keeps the order again. `rate_first = TRUE`, or `options(catchmentACS.rate_first_default = TRUE)` for calls from your own code, puts the rate rows first |
+| 0.3 | A result saved in the cache needs a checksum file | Results saved by versions 0.1 and 0.2 are not used | Nothing; the old cache folder can be deleted by hand (see `?cacs_cache_dir`) |
+| 0.2 | `cacs_acs_prefetch()` leaves out tracts numbered 9900 or higher (water and special-purpose tracts) and tracts with no area | Fewer tracts, with a message | `drop_water_tracts = FALSE` keeps them in a new download; data saved in the cache without them need `force_refresh = TRUE` |
+| 0.2, 0.3 | Results gain the columns `n_tracts_num`, `n_tracts_den`, and `ring_topology` | Columns move | Pick columns by name |
+
+:::
+
+## Drive-time areas saved with versions 0.1 and 0.2
+
+`cacs_intersect_weight()` checks the drive-time areas it is given, and so does
+`cacs_run()` with `precomputed_isochrones`, after it downloads the ACS
+estimates if `acs` is not supplied. The areas must be an `sf` object in
+EPSG:4326 (longitude and latitude) with the 16 columns of a `cacs_isochrone()`
+result, including `ring_topology`, which versions 0.1 and 0.2 did not have.
+`cacs_validate_iso()` makes the same checks of the columns, their types, and
+the coordinate reference system, and returns one row for each problem, with a
+line of R code for a fix in its `example` column. Checking saved areas with it
+first avoids a download that ends in an error:
+
+```{r}
+#| label: s01-saved-areas
+#| eval: true
+
+issues <- cacs_validate_iso(old_areas)
+issues[, c("check", "col", "actual")]
+writeLines(issues$example)
+```
+
+This fix is right only if each row holds the whole area reachable within its
+`drive_time_min`, so that each area contains the shorter ones of the same site.
+`cacs_validate_iso()` flags rows whose `isomin` is above 0, but it does not
+compare the areas. These areas have one drive time for each site, so there is
+nothing to compare.
+
+Drive-time bands, also called rings, cover only the minutes between two drive
+times, so a band shares no area with the band inside it. When several drive
+times are requested in one call, the osrm package returns bands, and since
+version 0.3 `cacs_isochrone()` joins them into cumulative areas. Saved areas
+that versions 0.1 and 0.2 built with OSRM for several drive times may be bands.
+The share of a shorter area that lies inside the longer one tells bands from
+cumulative areas, as in this example of one site with two bands:
+
+```{r}
+#| label: s02-bands-or-cumulative
+#| eval: true
+
+make_square <- function(xmin, ymin, xmax, ymax) {
+  sf::st_polygon(list(rbind(
+    c(xmin, ymin), c(xmax, ymin), c(xmax, ymax),
+    c(xmin, ymax), c(xmin, ymin)
+  )))
+}
+core <- make_square(-87.10, 33.00, -87.00, 33.10)
+
+# Two bands: 0 to 5 minutes, and 5 to 10 minutes (a larger square
+# with the first one cut out)
+bands <- sf::st_sf(
+  site_id = "S01",
+  isomin = c(0L, 5L),
+  isomax = c(5L, 10L),
+  geometry = sf::st_sfc(
+    core,
+    sf::st_difference(make_square(-87.20, 32.90, -86.90, 33.20), core),
+    crs = 4326
+  )
+)
+
+# Share of the shorter area that lies inside the longer one
+inside_share <- function(shorter, longer) {
+  overlap <- sf::st_intersection(sf::st_geometry(longer),
+                                 sf::st_geometry(shorter))
+  sum(as.numeric(sf::st_area(overlap))) /
+    sum(as.numeric(sf::st_area(shorter)))
+}
+inside_share(shorter = bands[1, ], longer = bands[2, ])
+```
+
+`cacs_rings_to_cumulative()` joins each band with the bands inside it, using the
+columns `isomin` and `isomax` (the start and end of each band, in minutes):
+
+```{r}
+#| label: bands-to-cumulative
+#| eval: true
+
+cumulative <- cacs_rings_to_cumulative(bands)
+sf::st_drop_geometry(cumulative)
+inside_share(shorter = cumulative[1, ], longer = cumulative[2, ])
+```
+
+The result still lacks the other columns of a `cacs_isochrone()` result. For
+areas made by another tool, these columns can hold the values that
+`cacs_isochrone()` gives an area built without a problem, with the meanings
+given in the Value section of `?cacs_isochrone`. `provider` and
+`provider_requested` must each be one of the four routing service names,
+`"osrm"`, `"ors"`, `"mapbox"`, or `"r5r"`, and `provider` is copied into the
+result, so for such areas it is only a label:
+
+```{r}
+#| label: s03-fill-columns
+#| eval: true
+
+areas <- cumulative
+areas$provider <- "osrm"
+areas$provider_requested <- "osrm"
+areas$provider_downgrade <- FALSE
+areas$profile <- "car"
+areas$routing_engine_version <- "osrm-pkg/unknown"
+areas$polygon_simplification_tolerance <- NA_real_
+areas$osm_snapshot_date <- "unknown"
+areas$osm_snapshot_status <- "unknown_best_effort"
+areas$generated_at <- Sys.time()
+areas$isochrone_empty <- FALSE
+areas$failure_reason <- NA_character_
+areas$retry_count <- 1L
+
+nrow(cacs_validate_iso(areas))
+```
+
+For example, `cacs_run()` uses an area only when its `isochrone_empty` is
+`FALSE` and its `failure_reason` is `NA`. An `isochrone_empty` of `NA` or a
+`failure_reason` of `""` passes the checks, but the area then counts as a
+routing failure.
+
+`cacs_intersect_weight()` takes areas only in EPSG:4326, and
+`cacs_validate_iso()` reports areas in another system:
+
+```{r}
+#| label: s04-crs-check
+#| eval: true
+
+bad_crs <- sf::st_transform(example_areas[1:2, ], 4269)
+cacs_validate_iso(bad_crs) |>
+  dplyr::filter(check == "iso_crs") |>
+  dplyr::select(check, actual, expected, example)
+```
+
+`isochrone_empty` and `provider_downgrade` must be logical, and
+`drive_time_min` and `retry_count` integers:
+
+```{r}
+#| label: s05-provider-downgrade-type
+#| eval: true
+
+bad_type <- example_areas[1, ]
+bad_type$provider_downgrade <- NA_character_
+issues <- cacs_validate_iso(bad_type)
+issues[, c("col", "actual", "expected")]
+writeLines(issues$example)
+```
+
+## Running an older analysis again
+
+The run saved in `fixture_032_3site_fresh.rds` shows what changes when an
+analysis from version 0.2 is run again on its saved inputs. With the areas and
+the ACS estimates supplied, `cacs_run()` builds no areas and downloads nothing:
+
+```{r}
+#| label: s06-rerun-saved-inputs
+#| eval: true
+
+old_sites <- sf::st_drop_geometry(old_run$sites_sf)
+old_sites <- old_sites[, c("site_id", "lon", "lat")]
+old_run_areas <- old_run$iso_sf_v2
+old_run_areas$ring_topology <- "cumulative"
+
+rerun <- cacs_run(
+  old_sites,
+  state = "AL",
+  drive_times = 10,
+  precomputed_isochrones = old_run_areas,
+  acs = old_run$acs_sf,
+  weight_args = list(keep_tract_audit = TRUE),
+  verbose = FALSE
+)
+```
+
+The warning gives one line for each reason found among the rate rows, and here
+there is one: the rows whose `failure_origin` is `"carrier"`, rates that are
+`NA` because the estimate for the numerator or the denominator, or its margin
+of error (the half-width of its 90 percent confidence interval), is missing.
+Here they are the `ssi_rate` rows, one for each site. The new results compare
+with the saved ones as follows:
+
+```{r}
+#| label: s07-compare-with-saved
+#| eval: true
+
+compare <- dplyr::inner_join(
+  tibble::as_tibble(old_run$result_run_v2) |>
+    dplyr::select(site_id, variable, saved = estimate),
+  tibble::as_tibble(rerun) |>
+    dplyr::select(site_id, variable, new = estimate),
+  by = c("site_id", "variable")
+)
+dplyr::filter(
+  compare,
+  site_id == "AL_BHM_01",
+  variable %in% c("B01003_001", "B19013_001", "B19301_001",
+                  "poverty_rate", "ssi_rate")
+)
+
+# All other counts and rates at the three sites
+same <- dplyr::filter(
+  compare,
+  !variable %in% c("B19013_001", "B19301_001", "ssi_rate")
+)
+all.equal(same$saved, same$new)
+```
+
+The counts and four of the rates, `r nrow(same)` rows in all, did not change.
+Median household income (`B19013_001`) and per capita income (`B19301_001`)
+grew by the same factor wherever they have a value:
+
+```{r}
+#| label: median-ratio
+#| eval: true
+
+proxies <- dplyr::filter(compare, variable %in% c("B19013_001", "B19301_001"))
+dplyr::mutate(proxies, ratio = new / saved)
+```
+
+The factor, `r length(unique(old_run$acs_sf$variable))`, is the number of ACS
+variables in the run, in which every tract has a row for each variable. Before
+version 0.5.0, the weights that average medians and per-person values summed to
+one over all the variables of a site and drive time;
+`vignette("porting-v04-to-v05", package = "catchmentACS")` describes the
+correction.
+
+In the saved results, `ssi_rate` is
+`r unique(compare$saved[compare$variable == "ssi_rate"])` at every site, because
+version 0.2 divided `B19056_001` by `B11001_001`, two counts of all households.
+It now divides the households with Supplemental Security Income in the
+past 12 months, `B19056_002`, by all households, `B19056_001`. The saved ACS
+estimates lack `B19056_002`:
+
+```{r}
+#| label: ssi-codes
+#| eval: true
+
+cacs_acs_default_rates$ssi_rate
+setdiff(unlist(cacs_acs_default_rates), old_run$acs_sf$variable)
+```
+
+A new download with the default variables of `cacs_acs_prefetch()` or
+`cacs_run()` includes it, since it is in `cacs_acs_default_vars`.
+
+Tables made with `summary()` in version 0.2 are also affected. Until version
+0.4, each row of its `rates_breakdown` element showed the mean, standard
+deviation, and count of missing values of the next rate in alphabetical order,
+and the last row those of the first rate. Version 0.4 corrected this and added
+per-site tables of the rates, which `cacs_summary_as_markdown()` formats as
+Markdown.
+
+Since version 0.3, `keep_tract_audit = TRUE`, passed above to
+`cacs_intersect_weight()` through `weight_args`, adds the attribute
+`cacs_tract_audit`. It has one row for each tract in each drive-time area, with
+the tract's coverage weight, the share of its area inside the drive-time area.
+It can replace code that intersects the areas with tract boundaries to list the
+tracts:
+
+```{r}
+#| label: s08-tract-table
+#| eval: true
+
+tracts <- attr(rerun, "cacs_tract_audit")
+names(tracts)
+dplyr::count(tracts, site_id, drive_time_min, name = "tracts")
+```
+
+## Building drive-time areas again
+
+Areas built again can differ from the saved ones. One reason is the OSRM grid
+resolution `res`: the osrm package draws each area from travel times to a grid
+of `res` by `res` points around the site. Without `res`, version 0.2 used 50;
+version 0.5.1 uses `30L` with `osrm_mode = "demo"`, the default, and `70L` with
+`osrm_mode = "docker"`. Version 0.2 dropped `res` from `iso_args` with a
+warning, so a script that gave it there used 50 as well. To build the areas on
+the grid of version 0.2, set `res = 50L` in `cacs_isochrone()`, or
+`iso_args = list(res = 50L)` in `cacs_run()`. `?cacs_isochrone` describes the
+grid, an option that changes the values, and the waiting time on the demo
+server. The road data of the server and the coordinates of the sites can
+change too.
+
+## Saved results in the cache
+
+Since version 0.3, a result saved in the cache is used only when the checksum
+file next to it (`.fingerprint`) is present and its checksum matches. Results
+saved by versions 0.1 and 0.2 have no checksum file, so the first run after the
+upgrade builds the areas and downloads the ACS estimates again.
+Versions 0.5.1 and earlier kept saved results in the user cache folder of the
+operating system, which version 0.6.0 neither reads nor deletes;
+`?cacs_cache_dir` gives the path of that folder on each system, and the folder
+can be deleted by hand.
+
+`cacs_set_cache(FALSE)` turns the cache off for the rest of the R session, so
+that a script uses no saved results. The option `catchmentACS.cache_dir` or the
+environment variable `CACS_CACHE_DIR` sets another cache folder (see
+`cacs_cache_dir()`). Results saved in the default folder, inside the temporary
+folder of the R session, are deleted when the session ends.
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```

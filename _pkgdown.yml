@@ -1,0 +1,162 @@
+url: https://joonho112.github.io/catchmentACS
+
+template:
+  bootstrap: 5
+  bootswatch: cosmo
+  bslib:
+    primary: "#C44536"
+  math-rendering: katex
+
+llm-docs: false
+
+home:
+  title: "catchmentACS: Isochrone-Based Area-Weighted ACS Aggregation"
+  description: >
+    Computes American Community Survey (ACS) estimates for the area within a
+    given drive time of each of a set of points, such as the locations of
+    pre-kindergarten classrooms. Such an area is called an isochrone, and the
+    estimates of the census tracts that overlap it are combined with two
+    area-based weights: for a count, the share of each tract's area that lies
+    inside, and for the medians and per-person values of three ACS tables
+    (median household income, median home value, and per capita income), each
+    tract's share of the overlapping area. A median or per-person value from any
+    other table is added up like a count. Every estimate comes with a margin of
+    error, the half-width of its confidence interval (90 percent by default),
+    and a record of how it was produced.
+
+authors:
+  JoonHo Lee:
+    href: https://github.com/joonho112
+
+footer:
+  structure:
+    left: developed_by
+    right: built_with
+
+navbar:
+  structure:
+    left: [reference, articles, news]
+    right: [search, github]
+  components:
+    articles:
+      text: Articles
+      menu:
+      - text: Using the package
+      - text: Getting started
+        href: articles/getting-started.html
+      - text: Alabama Pre-K example
+        href: articles/alabama-tutorial.html
+      - text: Routing services and API keys
+        href: articles/providers.html
+      - text: Mapping each step
+        href: articles/visual-walkthrough.html
+      - text: Methods
+      - text: Methods overview
+        href: articles/methodology.html
+      - text: Area weighting
+        href: articles/theory-spatial-aggregation.html
+      - text: Margins of error
+        href: articles/theory-moe-propagation.html
+      - text: Rates
+        href: articles/theory-derived-rates.html
+      - text: Updating from older versions
+      - text: From 0.1 or 0.2
+        href: articles/porting-v01-to-v03.html
+      - text: From 0.3
+        href: articles/porting-v03-to-v04.html
+      - text: From 0.4
+        href: articles/porting-v04-to-v05.html
+
+reference:
+- title: Package
+  desc: What the package computes and how the five steps fit together.
+  contents:
+  - catchmentACS-package
+- title: The five steps
+  desc: >
+    The five steps that make the estimates: the drive-time areas, the ACS
+    estimates, the tracts that overlap each area, the margins of error, and the
+    rates.
+  contents:
+  - cacs_run
+  - cacs_isochrone
+  - cacs_acs_prefetch
+  - cacs_intersect_weight
+  - cacs_propagate_moe
+  - cacs_derive_rates
+- title: Result summaries
+  desc: Reading a result, seeing how it was produced, and turning it into a table.
+  contents:
+  - cacs_describe
+  - cacs_summary_as_markdown
+  - summary.cacs_run_result
+  - print.cacs_run_result
+  - print.cacs_run_summary
+  - as_tibble.cacs_run_result
+  - group_by.cacs_run_result
+- title: Maps of one site
+  desc: >
+    Leaflet maps of one site's drive-time areas, the tracts they overlap, the
+    weighted estimates, and the rates.
+  contents:
+  - cacs_plot_site_pipeline
+  - cacs_plot_site_isochrone
+  - cacs_plot_site_intersection
+  - cacs_plot_site_weighted
+  - cacs_plot_site_rates
+  - format.cacs_site_plot_pipeline
+  - print.cacs_site_plot_pipeline
+- title: Cache and configuration
+  desc: Turning the on-disk cache on or off, and finding where it is and what it holds.
+  contents:
+  - cacs_cache_dir
+  - cacs_set_cache
+  - cacs_get_cache_state
+  - cacs_clear_cache
+  - cacs_cache_status
+- title: Validation and conditions
+  desc: >
+    Checking ACS data and drive-time areas that come from somewhere else, and
+    collecting the package's messages, warnings, and errors.
+  contents:
+  - cacs_acs_validate
+  - cacs_validate_iso
+  - cacs_validate_osrm_endpoint
+  - cacs_capture_conditions
+  - catchmentACS-conditions
+- title: Rates, margins of error, and drive-time rings
+  desc: >
+    The ACS codes of the five rates, conversion between a margin of error and a
+    standard error, and cumulative drive-time rings.
+  contents:
+  - cacs_acs_default_rates
+  - cacs_rings_to_cumulative
+  - cacs_se_to_moe
+  - cacs_moe_to_se
+- title: Bundled data
+  desc: The data objects installed with the package.
+  contents:
+  - cacs_acs_default_vars
+  - cacs_alabama_sites
+
+articles:
+- title: Using the package
+  desc: Running an analysis of drive-time areas, and reading the result.
+  contents:
+  - getting-started
+  - alabama-tutorial
+  - providers
+  - visual-walkthrough
+- title: Methods
+  desc: How the estimates and their margins of error are computed.
+  contents:
+  - methodology
+  - theory-spatial-aggregation
+  - theory-moe-propagation
+  - theory-derived-rates
+- title: Updating from older versions
+  desc: What changed in each version, and what to change in code written for an older one.
+  contents:
+  - porting-v01-to-v03
+  - porting-v03-to-v04
+  - porting-v04-to-v05

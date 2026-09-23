@@ -1,0 +1,235 @@
+---
+title: "Updating code written for version 0.3"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+vignette: >
+  %\VignetteIndexEntry{Updating code written for version 0.3}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+catchmentACS 0.4 changed some defaults and outputs that code written for 0.3
+may rely on. Estimates of medians and per-person values computed with 0.3 can
+also change, because of a correction made in 0.5.0 that
+`vignette("porting-v04-to-v05", package = "catchmentACS")` describes with the
+other changes of that version.
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+The examples use two files installed with the package. One holds drive-time
+areas for 5, 10, and 15 minutes around made-up sites, drawn as circles, and
+the examples take those of `AL_SITE_07`. The other holds American Community
+Survey (ACS) estimates that are random numbers for small squares standing in
+for census tracts.
+
+```{r}
+#| label: example-data
+#| eval: true
+
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+iso_07 <- iso[iso$site_id == "AL_SITE_07", ]
+site_07 <- data.frame(site_id = "AL_SITE_07", lon = -85.365, lat = 31.655)
+```
+
+## The value of the expression in `cacs_capture_conditions()`
+
+`cacs_capture_conditions()` evaluates an expression and returns a table of the
+messages and warnings of catchmentACS given while it runs. In 0.3 it returned
+only that table. An assignment inside the expression, as in
+`cacs_capture_conditions(result <- cacs_run(site_07, state = "AL"))`, does not
+keep the value, because the expression is evaluated in a new environment.
+
+From 0.4 on, `return_value = "both"` returns a list with the value of the
+expression, `result`, and the table, `conditions`:
+
+```{r}
+#| label: capture-both
+#| eval: true
+
+out <- cacs_capture_conditions(
+  cacs_run(site_07, state = "AL",
+           precomputed_isochrones = iso_07, acs = acs),
+  return_value = "both"
+)
+result <- out$result
+table(out$conditions$class)
+```
+
+The captured conditions here are the progress messages of `cacs_run()`, which
+are not shown. The default is still `return_value = "conditions"`, and
+`options(catchmentACS.capture_return_value = "both")` changes it for the
+session.
+
+The approach used with 0.3, an assignment with `<<-` inside the expression,
+still works. R assigns the value to the first variable of that name that it
+finds, searching from the environment in which `cacs_capture_conditions()` is
+called, and creates the variable in the global environment when there is none
+(`?assignOps`). Inside a function, creating the variable first, as with
+`result <- NULL`, keeps the value in the function.
+
+## Drive-time areas built on the public OSRM server
+
+With the Open Source Routing Machine (OSRM), the default routing service,
+`cacs_isochrone()` used `res = 70L` in 0.3 when `res` was not given. Since
+0.4, it uses `res = 30L` with `osrm_mode = "demo"`, the default, which sends
+the requests to the public OSRM demo server, and still `res = 70L` with
+`osrm_mode = "docker"`.
+
+The coarser grid sends fewer requests, so the demo server is less likely to
+respond with HTTP status 429 (too many requests), but it can give different
+areas, and so different estimates. To keep the grid of a 0.3 script, set
+`res = 70L` in the call to `cacs_isochrone()`, or `iso_args = list(res = 70L)`
+in `cacs_run()`:
+
+```{r}
+#| label: osrm-res
+#| eval: false
+
+# Needs the osrm package and an internet connection.
+iso_70 <- cacs_isochrone(site_07, drive_times = c(5, 10, 15), res = 70L)
+```
+
+`options(catchmentACS.osrm_demo_budget_protect = FALSE)` makes `res = 70L` the
+default with both values of `osrm_mode`. `cacs_validate_osrm_endpoint()`, added
+in 0.4, checks whether an OSRM server is accepting requests before the areas
+are built. `?cacs_isochrone` describes the grid and the waiting time on the
+demo server, and `vignette("providers", package = "catchmentACS")` describes
+the servers and this check.
+
+## The `isochrone` column of the list-column form
+
+With `output = "list_column"`, `cacs_run()` returns a row for each site and
+drive time, with the ACS estimates and the rates in list-columns of tibbles.
+In 0.3, its column `isochrone` held `NULL`. Since 0.4, it holds the
+drive-time area of the row, as a one-row sf object, when the areas are
+supplied through `precomputed_isochrones`, and since 0.5.0 also when
+`cacs_run()` builds them:
+
+```{r}
+#| label: list-column
+#| eval: true
+
+by_area <- cacs_run(
+  site_07, state = "AL", precomputed_isochrones = iso_07, acs = acs,
+  output = "list_column", verbose = FALSE
+)
+class(by_area$isochrone[[1]])
+```
+
+The same holds for the element `list_column` of the result with
+`output = "both"`. Code that kept the areas next to the result, for example to
+map them, can take them from this column.
+
+## The row order of `as_tibble()`
+
+In 0.3, `tibble::as_tibble()` returned the rows of a result of `cacs_run()`
+in their order. Versions 0.4 to 0.5.1 sorted them by `site_id`,
+`drive_time_min`, and `variable`, with the rows of the five rates first for
+each site and drive time. Version 0.6.0 keeps the rows in their order again,
+and `rate_first = TRUE` sorts them in the same way as 0.4 to 0.5.1:
+
+```{r}
+#| label: row-order
+#| eval: true
+
+head(tibble::as_tibble(result)$variable)
+head(tibble::as_tibble(result, rate_first = TRUE)$variable)
+```
+
+Code written for 0.3 that selects rows by their position after
+`tibble::as_tibble()` gets them in the order of the result, as it did with
+0.3. `options(catchmentACS.rate_first_default = TRUE)` makes
+`tibble::as_tibble()` put the rate rows first without `rate_first`, but only
+when it is called from code run in the global environment, such as the
+console, a script, or a document; a message says so the first time in a
+session.
+
+Functions of other packages that convert a result with `tibble::as_tibble()`
+keep the order, even with that option, so `dplyr::left_join()`,
+`dplyr::semi_join()`, `dplyr::anti_join()`, `tidyr::pivot_wider()`, and
+`dplyr::summarise()` or `dplyr::reframe()` after `dplyr::rowwise()` work on a
+result as on any other table (`?as_tibble.cacs_run_result`). In 0.4 to 0.5.1,
+these functions got the sorted rows unless
+`options(catchmentACS.rate_first_default = FALSE)` was set.
+`dplyr::semi_join()` and `dplyr::anti_join()` could then return the wrong rows,
+and summaries after `dplyr::rowwise()` with grouping variables could have the
+wrong labels, without a warning; such results should be computed again.
+
+## Rates by site in `summary()`, `print()`, and Markdown tables
+
+From 0.4 on, `summary()` of a result also has the elements `rates_per_site`
+and `rates_per_site_moe`, tables of the five rates with a row for each site and
+drive time (`site_id` and `drive_time_min`). In `rates_per_site_moe`, each cell
+gives the estimate and its margin of error (MOE), the half-width of its
+confidence interval at the 90 percent level by default. `print()` shows the
+first table for results with at most
+`getOption("catchmentACS.summary_per_site_max")` sites, 12 by default, and
+`cacs_summary_as_markdown()` formats either table as Markdown:
+
+::: {style="overflow-x: auto;"}
+
+```{r}
+#| label: markdown-table
+#| eval: true
+
+cacs_summary_as_markdown(summary(result)$rates_per_site_moe)
+```
+
+:::
+
+None of these additions requires a change to 0.3 code.
+
+## Values in `rates_breakdown` before 0.4
+
+In 0.2 and 0.3, the rows of the element `rates_breakdown` of `summary()`
+were shifted by one: the mean, standard deviation, and count of missing values
+shown for each rate belonged to another rate. Since 0.4, `dplyr::group_by()`
+has a method for results of `cacs_run()`, which have the class
+`cacs_run_result`: `group_by(cacs_run_result, ...)` removes that class before
+grouping, so tables summarized from a result are ordinary tibbles
+(`?group_by.cacs_run_result`). Values from `rates_breakdown` reported with
+0.2 or 0.3 need to be computed again.
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```

@@ -1,0 +1,447 @@
+---
+title: "Area weighting of tract estimates"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{Area weighting of tract estimates}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5,
+  fig.align = "center",
+  out.width = "85%"
+)
+```
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+A drive-time area is drawn from travel times, and its edge cuts across census
+tracts: the area around a site takes in some tracts whole and parts of others.
+catchmentACS estimates characteristics of the people and households in the
+area, such as the number below the poverty level, from the American Community
+Survey (ACS) estimates for these tracts. The weight of each tract is computed
+from the area it shares with the drive-time area. The margins of error of these
+estimates, half-widths of confidence intervals at the 90 percent level by
+default, are derived in
+`vignette("theory-moe-propagation", package = "catchmentACS")`, and the rates
+are described in `vignette("theory-derived-rates", package = "catchmentACS")`.
+
+## Area weighting and its assumption
+
+As in `vignette("methodology", package = "catchmentACS")`, we write $I_s$ for
+the drive-time area of site $s$ at one drive time and $T_j$ for census tract
+$j$. The part of the tract inside the drive-time area is $I_s \cap T_j$, and
+$\lvert\,\cdot\,\rvert$ denotes area. An ACS estimate describes a whole tract,
+while the drive-time area may contain only part of it.
+
+Area weighting is a simple and widely used way to move counts from one set of
+areas to another. It assumes that whatever a variable counts is spread evenly
+over the tract's area, which rarely holds in practice [@comber2019spatial,
+p. 8]. Let $\rho_j$ be the number per unit area, in tract $T_j$, of whatever
+the variable counts: people, households, or a subgroup such as the people below
+the poverty level. If $\rho_j$ is the same everywhere in the tract, the number
+in any part $S$ of the tract is proportional to the area of that part:
+
+$$
+\text{number in } S = \rho_j \, \lvert S \rvert
+= \big(\text{number in } T_j\big) \cdot \frac{\lvert S \rvert}{\lvert T_j \rvert}.
+$$
+
+With $S = I_s \cap T_j$, the part of a tract count that lies in the drive-time
+area is the count multiplied by the share of the tract's area inside the
+drive-time area. This share is the coverage weight of the next section.
+
+Counts, such as the number of people below the poverty level or the number of
+households, can be split this way. Medians and per-person values, such
+as median household income (`B19013_001`) and per capita income
+(`B19301_001`), do not add up over area: half of a tract does not have half of
+its per capita income. For these, the package averages the tract values with
+weights proportional to the area each tract shares with the drive-time area.
+This average stands in for the median or per-person value of the drive-time
+area, but its weights follow area and ignore how many people live in each
+tract. It can therefore be far from that value when the overlapping tracts
+differ in population density, even if people are spread evenly within each
+tract; the next section gives an example. The margin of error reported with
+such an average describes the sampling error of the average, not the
+difference between it and the drive-time area's own value, and that difference
+does not shrink as the ACS margins of error do. A rate, such as the poverty rate, is
+the ratio of two counts, and each of the two counts is split by area.
+
+The assumption fails where the people of a tract live on a small part of its
+area. Suppose that 80 percent of a tract is uninhabited woodland and that its
+residents live on the remaining 20 percent. A drive-time area that covers all
+of the woodland and none of the settled part gives the tract a coverage weight
+of 0.8, so it is credited with 80 percent of the tract's residents, although
+none of them live inside. The error grows with how unevenly people are spread
+within the tracts, as in a large rural tract that contains a small town.
+Methods that use other data, such as land cover, to place people within tracts
+relax the assumption [@comber2019spatial, pp. 3–5]. catchmentACS uses area
+weighting only: `weight_method = "population"` is not implemented yet, and
+using it gives an error.
+
+## Coverage weights and area shares
+
+Both weights are computed from the overlap area $\lvert I_s \cap T_j \rvert$
+and differ in what it is divided by. The coverage weight of tract $j$ divides
+it by the area of the tract,
+
+$$
+w^{cov}_{sj} = \frac{\lvert I_s \cap T_j \rvert}{\lvert T_j \rvert}
+\;\in\; [0, 1],
+$$
+
+which is 1 when the tract lies wholly inside the drive-time area and 0 when the
+two do not overlap. The coverage weights of the overlapping tracts need not sum
+to one, since each is a share of a different tract. Their sum adds up the
+covered fractions of the tracts: two whole tracts and half of a third give 2.5,
+and so do five tracts that are each half covered. The column `weight_sum` of
+the result reports the sum for each count, median, and per-person value.
+
+The area share of tract $j$ divides the overlap area by the total overlap area
+of the tracts,
+
+$$
+w^{mean}_{sj} = \frac{\lvert I_s \cap T_j \rvert}{\sum_k \lvert I_s \cap T_k \rvert},
+$$
+
+so the area shares sum to one. These sums, like all sums over tracts below,
+run over the tracts kept for the site, drive time, and variable. A tract is
+kept if its coverage weight is above the argument `min_weight` (see the section
+on the calculation) and the ACS data have a row for it and the variable. The
+area shares are proportional to the coverage weights multiplied by the tract
+areas, $w^{mean}_{sj} \propto w^{cov}_{sj}\, \lvert T_j \rvert$. When the
+tracts have the same area, the area shares are therefore the coverage weights
+divided by their sum.
+
+A count is estimated by the sum of the tract estimates $Y_j$ weighted by
+coverage weights,
+
+$$
+\widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j ,
+$$
+
+which grows with the part of each tract inside the drive-time area. With area
+shares in place of coverage weights, the result would be an average of the
+tract counts, on the scale of one tract.
+
+A median or a per-person value is estimated by the average of the tract
+estimates $X_j$ weighted by area shares,
+
+$$
+\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j .
+$$
+
+Because the area shares are nonnegative and sum to one, $\widehat{\bar X}_s$ is
+at least the smallest and at most the largest of the tract values. A sum of the
+same values weighted by coverage weights, whose sum can be above or below one,
+can fall outside that range.
+
+The area shares weight each tract by its overlap area and ignore how many
+people live there. Two made-up tracts show how much this can matter. Tract 1
+has an area of 1 km², 1,000 residents, and a per capita income of 10,000
+dollars, and lies wholly inside the drive-time area. Tract 2 has an area of
+100 km², 1,000 residents, and a per capita income of 50,000 dollars, and 10 km²
+of it lie inside the drive-time area. The code below applies the package's
+formula for a per-person value to these numbers by hand. For comparison, it
+also computes the per capita income of the people inside, on the assumption
+that within each tract both the residents and their income per person are the
+same everywhere.
+
+```{r}
+#| label: two-tracts
+#| eval: true
+
+tracts <- data.frame(
+  tract      = c(1, 2),
+  area_km2   = c(1, 100),       # area of the tract
+  inside_km2 = c(1, 10),        # area of its part inside the drive-time area
+  residents  = c(1000, 1000),
+  income_pc  = c(10000, 50000)  # per capita income, dollars
+)
+tracts$w_cov  <- tracts$inside_km2 / tracts$area_km2         # coverage weight
+tracts$w_mean <- tracts$inside_km2 / sum(tracts$inside_km2)  # area share
+tracts
+
+# The package's formula: the average of the tract values weighted by area shares
+area_share_average <- sum(tracts$w_mean * tracts$income_pc)
+
+# The people inside and their per capita income (both assumed even within each tract)
+residents_inside <- sum(tracts$w_cov * tracts$residents)
+income_inside    <- sum(tracts$w_cov * tracts$residents * tracts$income_pc) /
+  residents_inside
+
+c(area_share_average = area_share_average,
+  residents_inside   = residents_inside,
+  income_inside      = income_inside)
+```
+
+The package's formula gives
+`r format(round(area_share_average), big.mark = ",")` dollars, while the
+`r format(residents_inside, big.mark = ",")` people inside have a per capita
+income of `r format(round(income_inside), big.mark = ",")` dollars. Most of the
+overlap area lies in tract 2, but most of the people inside live in tract 1.
+The per capita income of the people inside is their total income divided by
+their number, a ratio of two counts. The area-share average equals it when the
+overlapping tracts have the same number of residents per unit area.
+
+A rate, such as the poverty rate, is estimated by the ratio of two
+coverage-weighted sums of tract estimates,
+$\widehat{A}_s = \sum_j w^{cov}_{sj}\, A_j$ for its numerator and
+$\widehat{B}_s = \sum_j w^{cov}_{sj}\, B_j$ for its denominator.
+`vignette("theory-derived-rates", package = "catchmentACS")` shows when this
+ratio is an average of the tract rates, weighted by the part of each tract's
+denominator inside the drive-time area, and describes the margins of error of
+rates.
+
+## How the package chooses the weights
+
+Each row of the results records the kind of estimate in the column
+`estimand_family` and the weights used in `weight_basis`: coverage weights for
+counts and rates, and area shares for medians and per-person values. The kind
+is read from the ACS code alone, as the help page of `cacs_intersect_weight()`
+and `vignette("methodology", package = "catchmentACS")` describe. Median age
+(`B01002_001`), for instance, is a median from a table that the package does
+not list, so it is added up like a count, without a warning.
+
+For a median, the area-share average is a looser stand-in than for a
+per-person value. Even when the tracts have the same population density, an
+average of tract medians is in general not the median of the combined
+population, which depends on the income distribution in each tract. The ACS
+publishes its 5-year [detailed tables](https://www.census.gov/programs-surveys/acs/data/data-tables.html)
+for all areas down to block groups,
+census tracts included, and one of these tables, `B19001`, gives the number of
+households in 16 income brackets. The package does not use these brackets: the
+area-share average of the tract medians stands in for the median of the
+drive-time area. The brackets themselves can be aggregated, because they are
+counts: asking for `B19001_017` in `variables` gives the number of households
+in that bracket for the drive-time area, with a coverage-weighted sum like any
+other count. What the package has no function for is turning brackets into a
+median.
+
+## Measuring the areas
+
+`cacs_intersect_weight()` computes the overlaps and their areas on a flat map.
+Before measuring any area, it projects the drive-time areas and the tracts to
+EPSG:5070 (NAD83 / Conus Albers) and measures all areas there, in square
+meters. This Albers projection is equal-area: the area of a shape on the
+projected map is its area on the reference ellipsoid. Every area in
+a run is measured on this one map.
+
+A coverage weight is the ratio of two areas within the same tract, so it
+changes little with the way area is measured. EPSG defines this projection for
+the contiguous 48 states. The package checks its own box for that scope, drawn
+around the contiguous United States and the District of Columbia with a quarter
+of a degree to spare. The bounding boxes of both inputs must lie between 24.14
+and 49.64 degrees north and between -125.25 and -66.68 degrees east. Data for
+Alaska, Hawaii, or Puerto Rico give an error.
+
+## The calculation for each site
+
+Before it combines anything, `cacs_intersect_weight()` repairs invalid
+geometries in both inputs (see below) and skips, with a warning, tracts whose
+area is zero or not finite. The skipped tracts are listed in the
+`skipped_geoids` attribute of the result. Tracts with a coverage weight at or
+below `min_weight` (by default `1e-6`), such as tracts that only touch the edge
+of the area, are dropped before the area shares and the estimates are
+computed.
+
+The help page of `cacs_intersect_weight()` lists the steps of the calculation.
+It also describes the single row of `NA` values, with
+`failure_origin = "intersection"`, that a site and drive time gets when no
+tract is left or the calculation fails.
+
+Invalid geometries, such as polygons whose edges cross, are repaired with
+`sf::st_make_valid()` or, if some remain invalid, with a buffer of zero width
+(`sf::st_buffer()`), each time with a warning. This is done for both inputs
+and again for the overlaps of each pair. Repair can change a shape and its
+area. A geometry that is still invalid after both attempts is replaced by an
+empty one. An empty tract has zero area and is skipped, an empty drive-time
+area gives its pair the row described above, and an empty overlap adds
+nothing. If every geometry of an input is still invalid, the function stops
+with an error.
+
+## Recomputing the weights for one site
+
+The weights and one count for one site can be recomputed from the two areas
+that `cacs_intersect_weight()` records for each tract when
+`keep_tract_audit = TRUE`. The data for this example ship with the package. In
+these data, squares of nearly equal size, scattered with gaps between them and
+carrying random ACS values, take the place of census tracts. Each site sits at
+the center of one of the squares, and its drive-time areas are circles around
+it. The ACS values are made up, so the numbers below show the arithmetic and
+not a real place. At a drive time of 10 minutes, the circle of site
+`AL_SITE_17` contains the site's own square and cuts two other squares at its
+edge. Because of the gaps, the squares cover only a small part of the circle;
+real census tracts tile a state, so for an area of this size the sum of the
+coverage weights there would be far larger.
+
+```{r}
+#| label: vf-intersect
+#| eval: true
+
+# Data bundled with the package
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_17"
+drive_time <- 10L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  keep_tract_audit = TRUE,
+  verbose          = FALSE
+)
+```
+
+The `cacs_tract_audit` attribute of the result lists, for each tract that the
+drive-time area overlaps, the area of the overlap (`int_area_m2`) and the area
+of the tract (`tract_area_m2`), in square meters on EPSG:5070:
+
+```{r}
+#| label: vf-audit
+#| eval: true
+
+areas <- attr(weighted, "cacs_tract_audit") |>
+  select(GEOID, int_area_m2, tract_area_m2) |>
+  arrange(desc(int_area_m2))
+
+areas
+```
+
+The coverage weights divide the overlap area by the tract area, and the area
+shares divide it by the total overlap area:
+
+```{r}
+#| label: vf-weights
+#| eval: true
+
+hand <- areas |>
+  mutate(
+    w_cov  = int_area_m2 / tract_area_m2,        # |I_s n T_j| / |T_j|
+    w_mean = int_area_m2 / sum(int_area_m2)      # |I_s n T_j| / sum_k |I_s n T_k|
+  )
+
+hand |> select(GEOID, w_cov, w_mean)
+
+c(
+  sum_w_cov  = sum(hand$w_cov),    # not 1 in general: each has its own denominator
+  sum_w_mean = sum(hand$w_mean)    # 1 by construction
+)
+```
+
+The coverage weights are `r format(round(hand$w_cov[1], 3))`,
+`r format(round(hand$w_cov[2], 3))`, and `r format(round(hand$w_cov[3], 3))`:
+the site's own square lies wholly inside the circle, and the other two only
+partly. Their sum, `r format(round(sum(hand$w_cov), 3))`, is the overlap area
+counted in squares, because these three squares have the same area; across the
+whole data set the squares differ in area by about five percent.
+
+The number of people below the poverty level (`B17001_002`) is a count, so the
+package estimates it by $\widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j$. The code
+below takes the three tract estimates from the ACS data and forms this sum:
+
+```{r}
+#| label: vf-total
+#| eval: true
+
+counts <- acs |>
+  sf::st_drop_geometry() |>
+  filter(GEOID %in% hand$GEOID, variable == "B17001_002") |>
+  select(GEOID, Y = estimate)
+
+hand_total <- hand |>
+  select(GEOID, w_cov) |>
+  left_join(counts, by = "GEOID")
+
+hand_total
+
+hand_Y_hat       <- sum(hand_total$w_cov * hand_total$Y)   # sum_j w_cov * Y_j
+hand_weight_sum  <- sum(hand_total$w_cov)                  # sum_j w_cov
+
+c(hand_Y_hat = hand_Y_hat, hand_weight_sum = hand_weight_sum)
+```
+
+The row of the package's result for the same variable has
+`estimand_family = "spatial_total"` and `weight_basis = "coverage"`:
+
+```{r}
+#| label: vf-pkg-row
+#| eval: true
+
+pkg_row <- weighted |>
+  filter(variable == "B17001_002") |>
+  select(variable, estimate, weight_sum, n_tracts,
+         estimand_family, weight_basis)
+
+pkg_row
+```
+
+The hand-computed sum, `r format(round(hand_Y_hat, 1), big.mark = ",")`
+people, is the `estimate` in the row above, and the sum of the coverage
+weights, `r format(round(hand_weight_sum, 3))`, is its `weight_sum`. The same
+two areas are recorded for every tract of every site and drive time in the
+result, so any row can be recomputed this way.
+
+## References
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```
+
+```{=html}
+<script>
+// Chrome can leave out a hat that sits over a bar, such as the hat of the
+// estimated average in the formulas above. Written as a spacing character,
+// the hat is always drawn.
+document.querySelectorAll("math mover > mover + mo").forEach(function (mo) {
+  if (mo.textContent === "\u0302") {
+    mo.textContent = "\u02C6";
+  }
+});
+</script>
+```

@@ -1,0 +1,279 @@
+---
+title: "Routing services, API keys, and offline use"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+vignette: >
+  %\VignetteIndexEntry{Routing services, API keys, and offline use}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+Two steps of `cacs_run()` contact services outside R. `cacs_isochrone()` asks a routing service, by default the Open Source Routing Machine (OSRM), for the area reachable from each site within each drive time. `cacs_acs_prefetch()` downloads American Community Survey (ACS) 5-year estimates for the census tracts of one state from the Census Bureau.
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+## What each service needs
+
+| Service | Selected with | What it needs |
+|:--|:--|:--|
+| Public OSRM demo server | `provider = "osrm"` and `osrm_mode = "demo"`, the defaults | The osrm package |
+| An OSRM server that you run | `provider = "osrm"` and `osrm_mode = "docker"` | The osrm package and the server |
+| openrouteservice | `provider = "ors"` | The openrouteservice package and an openrouteservice API key |
+| Census Bureau API | `cacs_acs_prefetch()`, which `cacs_run()` calls unless `acs` is supplied | A Census API key |
+| No service | `precomputed_isochrones` and `acs`, both supplied to `cacs_run()` | Drive-time areas and ACS estimates that you already have |
+
+`cacs_run()` passes `osrm_mode`, `res`, and some other settings of `cacs_isochrone()` through its argument `iso_args`, as in `iso_args = list(osrm_mode = "docker")`.
+
+## Census API key
+
+`cacs_acs_prefetch()` downloads the estimates through the tidycensus package, which is installed with catchmentACS. A download needs a Census API key in the environment variable `CENSUS_API_KEY`. The call below writes the key to your `.Renviron` file, from which later R sessions read it:
+
+```{r}
+#| label: census-key
+#| eval: false
+
+tidycensus::census_api_key("YOUR_KEY_HERE", install = TRUE)
+```
+
+`Sys.setenv(CENSUS_API_KEY = "YOUR_KEY_HERE")` sets the key for the current session only. The key is needed only to download: `cacs_acs_prefetch()` reads a result saved in the cache by an earlier download, without a key or an internet connection. By default, the cache keeps results only until the R session ends; the section "The cache" below describes a cache folder that keeps them for later sessions. If a download is needed and the key is not set, `cacs_acs_prefetch()` stops with an error before any request is sent. Estimates can be downloaded for the `year` values 2009 to 2024; `?cacs_acs_prefetch` describes the download.
+
+## OSRM
+
+With `provider = "osrm"`, `cacs_isochrone()` builds the areas with the osrm package, which is not installed with catchmentACS. By default, the requests go to the public OSRM demo server, which needs no key:
+
+```{r}
+#| label: osrm-live-demo
+#| eval: false
+
+# Needs the osrm package and an internet connection.
+iso <- cacs_isochrone(
+  sites = cacs_alabama_sites[1:3, ],
+  drive_times = c(5, 10, 15),
+  provider = "osrm",
+  osrm_mode = "demo",
+  res = 30L,
+  verbose = TRUE
+)
+```
+
+The osrm package pauses between requests to the demo server, which adds about 10 seconds for each site with the default settings. When the server reports that its limit on requests has been reached (HTTP status 429), `cacs_isochrone()` stops with an error; it returns no areas and saves none in the cache, not even those built before the limit was reached. An OSRM server that you run yourself, for example in a Docker container, has neither the pauses nor a limit shared with other users. `osrm_mode = "docker"` sends the requests to such a server, at `http://0.0.0.0:5000/` unless another address is given in `osrm.server`, as below, or in the option `catchmentACS.osrm_docker_server`. `cacs_run()` drops `osrm.server` from `iso_args` with a warning, so with `cacs_run()` the option sets the address.
+
+```{r}
+#| label: osrm-docker
+#| eval: false
+
+# Needs the osrm package and an OSRM server at this address.
+iso <- cacs_isochrone(
+  sites = cacs_alabama_sites[1:3, ],
+  drive_times = c(5, 10, 15),
+  provider = "osrm",
+  osrm_mode = "docker",
+  `osrm.server` = "http://localhost:5000/",
+  verbose = TRUE
+)
+```
+
+The osrm package draws the areas of a site from a grid of `res` by `res` points around it. The grid is sized for the longest drive time, so the areas for shorter drive times rest on fewer points. Without `res`, the grid has 30 by 30 points with `osrm_mode = "demo"` and 70 by 70 with `osrm_mode = "docker"`; a finer grid gives more detailed areas but sends more requests. Areas built with different values of `res` can differ, so giving `res` in the call keeps the grid the same when `osrm_mode` or the options change. `?cacs_isochrone` describes the servers and the grid in more detail.
+
+`cacs_validate_osrm_endpoint()` sends one small request to an OSRM server and returns a table with one row, in which `quota_ok` is `TRUE` when the server answered with HTTP status 200. `?cacs_validate_osrm_endpoint` describes the other columns and the warning given when the server's limit on requests has been reached. A server that cannot be reached, or does not answer within `timeout` seconds, gives `quota_ok = FALSE` and `http_status = NA` without an error.
+
+Without `server`, the request goes to the public demo server, or to the address in the osrm package's option `osrm.server` when that is set. A server that you run is checked only when its address is given in `server`:
+
+```{r}
+#| label: osrm-endpoint-preflight-live
+#| eval: false
+
+# Needs an internet connection for the first call and a server that you
+# run for the second.
+cacs_validate_osrm_endpoint()
+cacs_validate_osrm_endpoint(server = "http://localhost:5000", timeout = 2)
+```
+
+## openrouteservice
+
+With `provider = "ors"`, `cacs_isochrone()` builds the areas with openrouteservice through the openrouteservice package, which is not installed with catchmentACS. It needs an openrouteservice API key. `cacs_isochrone()` takes the key from its argument `ors_api_key`, by default the value of the environment variable `ORS_API_KEY`; with `cacs_run()`, the key comes from the same variable or from `iso_args = list(ors_api_key = ...)`. An empty key gives an error before any request is sent. A key set in `.Renviron`, like the Census key, stays out of scripts and reports.
+
+```{r}
+#| label: ors-live
+#| eval: false
+
+# Needs the openrouteservice package, an API key, and an internet connection.
+nzchar(Sys.getenv("ORS_API_KEY"))  # TRUE when the key is set
+
+iso <- cacs_isochrone(
+  sites = cacs_alabama_sites[1:3, ],
+  drive_times = c(5, 10, 15),
+  provider = "ors",
+  ors_api_key = Sys.getenv("ORS_API_KEY"),
+  verbose = TRUE
+)
+```
+
+The areas from openrouteservice and from OSRM are computed in different ways, so they can differ for the same site and drive time. The package's tests exercise this path against simulated openrouteservice responses only; the live-service tests it has cover OSRM (see `NEWS.md`).
+
+## Supplying drive-time areas and ACS estimates
+
+`cacs_run()` does not build drive-time areas when it is given them in `precomputed_isochrones`, and does not download ACS estimates when it is given them in `acs`. `precomputed_isochrones` takes a table like the one that `cacs_isochrone()` returns, and `acs` one like the result of `cacs_acs_prefetch()`. `cacs_validate_iso()` and `cacs_acs_validate()` check that tables made with other tools have the columns and the coordinate reference systems that `cacs_run()` needs, and `cacs_acs_validate()` also checks that no tract has two rows for the same variable; they do not check the values of the estimates and margins of error. The negative codes that the Census Bureau's data API puts in place of some estimates and margins of error, such as `-555555555`, pass these checks. `cacs_run()` treats these codes as missing values but uses any other negative value as it is (see `?cacs_intersect_weight`, which also says when a warning is given).
+
+The result carries a record of the call, the attribute `cacs_run_provenance`, whose element `execution_path` names the combination of inputs:
+
+| `execution_path` | `precomputed_isochrones` | `acs` | Services it may contact |
+|:--|:--|:--|:--|
+| `"5-call"` | not supplied | not supplied | the routing service and the Census Bureau API |
+| `"4-call-A"` | supplied | not supplied | the Census Bureau API |
+| `"4-call-B"` | not supplied | supplied | the routing service |
+| `"3-call"` | supplied | supplied | none |
+
+The number in each value counts the steps, out of five, that `cacs_run()` runs itself. The elements `bypass_iso` and `bypass_acs` of the same record are `TRUE` when the areas and the estimates, respectively, were supplied.
+
+The example below draws on files that ship with the package. Their drive-time areas were drawn without a routing service: each is a circle around its site, with a radius of 5 km for the 5-minute area, 10 km for 10 minutes, and 15 km for 15 minutes. The columns that name the routing service were filled in when the file was made, with values like those of an OSRM result:
+
+```{r}
+#| label: fixture-provenance
+#| eval: true
+
+example_iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+
+example_iso |>
+  sf::st_drop_geometry() |>
+  count(provider, provider_requested, profile,
+        osm_snapshot_date, ring_topology)
+```
+
+`cacs_run()` copies these values into the columns `provider`, `profile`, and `osm_snapshot_date` of its result, so with areas supplied, its argument `provider` is only recorded in `cacs_run_provenance` and shown when the result is printed. The ACS file holds made-up estimates for small squares, spaced apart, that are used in place of census tracts. With both files, `cacs_run()` contacts no service:
+
+```{r}
+#| label: offline-provider-check
+#| eval: true
+
+example_sites <- readRDS(system.file(
+  "extdata", "legacy_2025_sites.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+one_site <- "AL_SITE_07"
+iso_one <- example_iso |>
+  filter(site_id == one_site, drive_time_min == 5L)
+site_one <- example_sites |>
+  filter(site_id == one_site)
+
+out <- cacs_run(
+  sites = site_one,
+  state = "AL",
+  year = 2023,
+  drive_times = 5L,
+  variables = unname(cacs_acs_default_vars),
+  provider = "osrm",
+  precomputed_isochrones = iso_one,
+  acs = acs,
+  weight_method = "area",
+  output = "long",
+  verbose = FALSE
+)
+
+attr(out, "cacs_run_provenance") |>
+  as.data.frame() |>
+  select(execution_path, provider, bypass_iso, bypass_acs,
+         weight_method, output_format)
+```
+
+`?cacs_run` describes which other arguments are then only recorded.
+
+## What is not implemented yet
+
+`weight_method = "population"`, like the providers Mapbox and r5r, is accepted but not implemented yet. `cacs_isochrone()` gives its error for the two providers after checking its other arguments and before sending any request. In `cacs_run()`, `weight_method = "population"` gives an error before any step runs, while the two providers give theirs at the routing step, after the ACS estimates are downloaded unless `acs` is supplied. The three errors have the class `catchmentACS_error_credential`, which is also given for a missing or refused API key (see `?catchmentACS-conditions`).
+
+## The cache
+
+Unless the cache is turned off, `cacs_isochrone()` and `cacs_acs_prefetch()` save their results in the folder that `cacs_cache_dir()` returns. A later call that matches an earlier one reads the saved result instead of contacting the service; the help page of each function says what must match. For the drive-time areas, the sites themselves must match, among other things: their coordinates and their `site_id` values, along with the set of drive times, the provider, `profile`, `osrm_mode`, and `res`, and the installed versions of sf, PROJ, and GEOS. Adding one site to a run therefore builds the areas for all of the sites again.
+
+By default, the folder is inside the temporary folder of the R session, which R deletes when the session ends. Saved results are kept for later sessions when the option `catchmentACS.cache_dir` or the environment variable `CACS_CACHE_DIR` names a folder that lasts, for example with `options(catchmentACS.cache_dir = tools::R_user_dir("catchmentACS", "cache"))` in the R startup file. Once per session, the results in such a folder that have not been used for 30 days are deleted; the option `catchmentACS.cache_max_age_days` sets another number of days (see `?cacs_cache_dir`). `cacs_set_cache(FALSE)` turns the cache off for the rest of the session, and `cacs_get_cache_state()` reports the setting.
+
+`force_refresh = TRUE` makes `cacs_acs_prefetch()` download the estimates again and replace the saved result, which needs the Census key; with `cacs_run()`, it is given as `acs_args = list(force_refresh = TRUE)`. As long as they are kept, saved drive-time areas are used again, even if the map data of the routing service have changed since; a call with another `osm_snapshot_date` builds new ones. `cacs_clear_cache()` deletes saved results:
+
+```{r}
+#| label: cache-maintenance
+#| eval: false
+
+# Lists what the cache folder holds, then deletes the saved drive-time
+# areas and ACS estimates.
+cacs_cache_status()
+cacs_clear_cache("isochrone", confirm = FALSE)
+cacs_clear_cache("acs", confirm = FALSE)
+```
+
+`cacs_acs_prefetch(write_gpkg = TRUE)` also saves a downloaded result as a GeoPackage file, in the `acs` folder of the cache, for use in other GIS software. It is written even when the cache is off, but not when a saved result is read. The file is deleted when the session ends if the cache folder is the default one. In a folder that lasts between sessions, it is deleted together with its saved result or, if it has none, as when the cache was off, once it is as old as the saved results that are deleted; `cacs_clear_cache()` deletes it too. To keep a copy, write the result with `sf::st_write()`.
+
+`cacs_intersect_weight()`, the step of `cacs_run()` that combines the areas with the tracts, saves its results too, and its help page says what must match. The argument `cache_dir` of `cacs_run()` sets the folder for the saved results of all three functions.
+
+## A run that contacts both services
+
+Without `precomputed_isochrones` and `acs`, `cacs_run()` builds the areas and downloads the estimates itself. The routing service is chosen with `provider`, and for OSRM the server with `osrm_mode` in `iso_args`. The call below uses the example sites `cacs_alabama_sites`, made-up points near Alabama city centers:
+
+```{r}
+#| label: live-run-template
+#| eval: false
+
+# Needs the osrm package, a Census API key, and an internet connection.
+result <- cacs_run(
+  sites = cacs_alabama_sites,  # or your own sites
+  state = "AL",
+  year = 2023,
+  drive_times = c(5, 10, 15),
+  variables = unname(cacs_acs_default_vars),
+  provider = "osrm",
+  iso_args = list(osrm_mode = "demo"),  # "docker" for a server that you run
+  # With "docker", the server's address is set before the call with
+  # options(catchmentACS.osrm_docker_server = "http://localhost:5000/")
+  weight_method = "area",
+  output = "long",
+  verbose = TRUE
+)
+
+summary(result)$rates_per_site_moe
+attr(result, "cacs_run_provenance")
+```
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```

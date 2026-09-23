@@ -1,0 +1,516 @@
+---
+title: "Margins of error for combined estimates"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{Margins of error for combined estimates}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5,
+  fig.align = "center",
+  out.width = "85%"
+)
+```
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+Each American Community Survey (ACS) estimate for a census tract is published
+with a margin of error (MOE), the half-width of its 90 percent confidence
+interval. An estimate for a drive-time area combines the estimates of the
+tracts that overlap the area, and catchmentACS computes its margin of error
+from the margins of error of those tract estimates. The margins of error are
+computed by `cacs_intersect_weight()`, `cacs_propagate_moe()`, and
+`cacs_derive_rates()`, whose help pages describe the arguments and the columns
+of the results.
+
+## What the margins of error assume
+
+Margins of error are not added like estimates. For independent estimates the
+variances add, so the sum of two independent estimates that each have a margin
+of error $M$ has a margin of error of $\sqrt{2}\,M$. The formulas for sums,
+proportions, and ratios follow the approximations in chapter 8 of the Census
+Bureau's handbook for ACS data users [@census2020understanding]. The
+package applies the formula for a sum to the weighted tract estimates,
+treating the weights as fixed constants. The margins of error for medians and
+per-person values (rows whose `estimand_family` is `"median_proxy"` or
+`"area_weighted_scalar_proxy"`) come from an average of tract values weighted
+by area, an approximation made by the package rather than one given in the
+handbook.
+
+The margins of error are combined as if the tract estimates were independent.
+The handbook notes that its approximation formulas leave out the covariance
+between estimates, so they can overstate or understate the margin of error
+depending on the direction of the correlation. If the tract estimates in an
+area are positively correlated, the true margin of error of a count, a median,
+or a per-person value is larger than the reported one. For those three kinds of
+estimate the reported margins of error should be read as understatements of
+unknown size. For a rate, errors that move the numerator and the denominator
+in the same direction partly offset each other in the ratio, and the default
+ratio formula gives a wider margin than the proportion formula (both are given
+below). The package does not compute the net effect for a given rate.
+
+According to the handbook, the variance replicate tables that the Census
+Bureau publishes for some 5-year detailed tables, including estimates for
+tracts, account for the covariance that the approximation formulas leave out.
+@folch2023covariance compare three ways of computing the margin of error of
+combined ACS estimates and find that only the one based on these replicate
+tables accounts for the covariance between the estimates, and that it performs
+best. The package does not use these tables.
+
+The weights are treated as fixed numbers (the results record this with
+`weight_uncertainty_propagated = FALSE`). The margins of error therefore do
+not include error from area weighting itself. One source they leave out is the
+assumption that whatever a variable counts is spread evenly over each tract's
+area. The other, for medians and per-person values, is the weighting of tracts
+by area. They also take each drive-time area as given, so they do not include
+uncertainty in the area itself, which depends on the routing service and the
+road data used to compute it.
+
+## Standard errors and the 90 percent level
+
+Because the published margins of error are at the 90 percent confidence
+level, the handbook converts a margin of error $M$ to a standard error (SE)
+with $\mathrm{SE} = M / 1.645$ [@census2020understanding, chap. 7]. A margin
+of error at another confidence level is the standard error multiplied by $z$,
+the normal quantile for the level, `qnorm(1 - (1 - level) / 2)`:
+
+$$
+M = z\,\mathrm{SE}, \qquad \mathrm{SE} = \frac{M}{z}.
+$$
+
+At the 90 percent level the package uses $z = 1.645$, the value in the
+handbook, rather than `qnorm(0.95)`, which is
+`r format(qnorm(0.95), digits = 7)`; the two differ by about
+`r format(signif(1.645 - qnorm(0.95), 2), scientific = FALSE)`.
+
+The package combines margins of error through their standard errors. For two
+independent estimates with margins of error $M_1$ and $M_2$ at the 90 percent
+level, the margin of error of their sum is
+
+$$
+M_{\text{sum}}
+= z \sqrt{\left(\frac{M_1}{1.645}\right)^2 + \left(\frac{M_2}{1.645}\right)^2},
+$$
+
+which at the 90 percent level, where $z = 1.645$, is $\sqrt{M_1^2 + M_2^2}$,
+the handbook's formula for the margin of error of a sum. All the formulas in
+this article have this form: each tract margin of error is divided by 1.645 to
+give a standard error, the standard errors are combined, and the combined
+standard error is multiplied by $z$. The level is set by the `level` argument
+of `cacs_propagate_moe()`, 0.9 by default, and `cacs_derive_rates()` uses the
+same level for the rates.
+
+`cacs_se_to_moe()` and `cacs_moe_to_se()` convert between standard errors and
+margins of error at a given level.
+
+## Counts, medians, and per-person values
+
+The help page of `cacs_propagate_moe()` names the package's four
+margin-of-error formulas Families A, B, C1, and C2. C1 and C2 also appear in
+the package's warnings. The column `moe_formula_effective` of the results names
+the formula used for each row: `"weighted_sum"` (A), `"weighted_mean"` (B),
+`"proportion_subset"` (C1), or `"general_ratio_conservative"` (C2).
+
+In the notation of `vignette("methodology", package = "catchmentACS")`, a
+count for the drive-time area of site $s$ is
+$\widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j$. Here $Y_j$ is the estimate for
+tract $j$ and $w^{cov}_{sj}$ its coverage weight, the share of the tract's
+area inside the drive-time area; the sum runs over the tracts kept for the
+site, drive time, and variable. With the weights fixed, the term for tract $j$
+has the standard error $w^{cov}_{sj} M_j / 1.645$, where $M_j$ is the
+published margin of error of $Y_j$. The margin of error of the count
+(Family A) is therefore
+
+$$
+M(\widehat{Y}_s) = z \sqrt{\sum_j \left(\frac{w^{cov}_{sj}\, M_j}{1.645}\right)^2},
+$$
+
+which at the 90 percent level is $\sqrt{\sum_j (w^{cov}_{sj} M_j)^2}$, the
+handbook's formula for a sum applied to the weighted tract estimates. Each
+tract enters with its margin of error multiplied by its coverage weight. A
+tract that lies wholly inside the area enters with its full margin of error,
+and a tract with a tenth of its area inside with a tenth of it.
+
+A median or a per-person value is estimated by
+$\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j$, the average of the tract
+estimates $X_j$ weighted by their area shares $w^{mean}_{sj}$, which sum to
+one. Its margin of error (Family B) is the same formula with the area shares
+in place of the coverage weights:
+
+$$
+M(\widehat{\bar X}_s) = z \sqrt{\sum_j \left(\frac{w^{mean}_{sj}\, M_j}{1.645}\right)^2}.
+$$
+
+This is the margin of error of the weighted average under the same
+assumptions, independent tract estimates and fixed weights. The average of
+tract medians or per-person values only stands in for the median or
+per-person value of the drive-time area. Its margin of error describes the
+sampling error of the average itself, and the difference between that average
+and the drive-time area's own value is not part of it. Unlike sampling error,
+that difference does not shrink as the ACS margins of error do (see
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`). Since
+the area shares sum to one, $\sum_j w^{mean}_{sj} M_j$ is a weighted average
+of the tract margins of error. As long as no kept tract has a negative margin
+of error, the margin of error of the average is never larger than this weighted
+average at the 90 percent level. It is smaller whenever two or more of the kept
+tracts have a margin of error above zero.
+
+## Rates: the proportion and ratio formulas
+
+A rate $\widehat{R}_s = \widehat{A}_s / \widehat{B}_s$ divides two
+coverage-weighted counts, the numerator $\widehat{A}_s$ and the denominator
+$\widehat{B}_s$, whose margins of error $M(\widehat{A}_s)$ and
+$M(\widehat{B}_s)$ come from the formula for counts above. For a ratio of two
+estimates the handbook gives two approximations
+[@census2020understanding, chap. 8]. The proportion formula (C1) is for a
+proportion, a ratio whose numerator is part of its denominator, such as the
+people below the poverty level among the people for whom poverty status is
+determined:
+
+$$
+M(\widehat{R}_s) = \frac{\sqrt{M(\widehat{A}_s)^2 - \widehat{R}_s^2\, M(\widehat{B}_s)^2}}{\widehat{B}_s}.
+$$
+
+The ratio formula (C2) is for a ratio whose numerator is not part of its
+denominator:
+
+$$
+M(\widehat{R}_s) = \frac{\sqrt{M(\widehat{A}_s)^2 + \widehat{R}_s^2\, M(\widehat{B}_s)^2}}{\widehat{B}_s}.
+$$
+
+In the first-order (delta method) approximation, the variance of a ratio is
+
+$$
+\mathrm{SE}(\widehat{R}_s)^2 \approx
+\frac{\mathrm{SE}(\widehat{A}_s)^2
+- 2\widehat{R}_s\,\mathrm{Cov}(\widehat{A}_s, \widehat{B}_s)
++ \widehat{R}_s^2\,\mathrm{SE}(\widehat{B}_s)^2}{\widehat{B}_s^2}.
+$$
+
+With the covariance of the numerator and the denominator set to zero, $z$
+times the square root of this expression is the ratio formula; with the
+covariance set to $\widehat{R}_s\,\mathrm{SE}(\widehat{B}_s)^2$, it is the
+proportion formula.
+
+The two formulas differ by $2\widehat{R}_s^2 M(\widehat{B}_s)^2$ under the
+square root, so the ratio formula never gives the narrower margin. How much
+wider it is depends on $\widehat{R}_s M(\widehat{B}_s)$ relative to
+$M(\widehat{A}_s)$: with
+$r = \widehat{R}_s^2 M(\widehat{B}_s)^2 / M(\widehat{A}_s)^2$ below 1, the
+ratio formula gives $\sqrt{(1 + r) / (1 - r)}$ times the margin of error of
+the proportion formula. When the numerator is not zero, $r$ is also the square
+of the ratio of the denominator's relative margin of error,
+$M(\widehat{B}_s) / \widehat{B}_s$, to the numerator's,
+$M(\widehat{A}_s) / \widehat{A}_s$, because
+$\widehat{R}_s = \widehat{A}_s / \widehat{B}_s$. The factor therefore varies
+from rate to rate and from area to area, and it grows without bound as $r$
+approaches 1. When $r$ is greater than 1, the value under the square root of
+the proportion formula is negative; the next section describes what the
+package does then. The second calculation by hand in
+`vignette("theory-derived-rates", package = "catchmentACS")` compares the two
+formulas for the labor force participation rate of one drive-time area.
+
+The numerator of each of the five built-in rates is part of its denominator,
+so for all five the handbook's formula is the proportion formula. By default,
+`cacs_derive_rates()` and `cacs_run()` nevertheless use the ratio formula for
+all five rates. `vignette("theory-derived-rates", package = "catchmentACS")`
+lists the formula that each rate gets for each value of `formula_dispatch` and
+gives the reason recorded for `unemp_rate`.
+
+## A negative value under the square root
+
+When the proportion formula is chosen for a rate and the value under its
+square root is negative, the package uses the ratio formula for that row
+instead, as the Census Bureau's handbook advises
+[@census2020understanding, chap. 8]. The value is negative when $r > 1$, that
+is, when the relative margin of error of the numerator is smaller than that of
+the denominator. The value under the square root of the ratio formula is a sum
+of two squares and cannot be negative, so the ratio formula never fails for
+this reason. It gives no margin of error only when the denominator is zero or
+one of its four inputs is missing.
+
+The row records the substitution: `moe_formula_requested` keeps
+`"proportion_subset"`, the formula chosen, while `moe_formula_effective` is
+`"general_ratio_conservative"`, with `moe_fallback = TRUE` and
+`moe_fallback_reason = "negative_variance"`. A rate computed with the formula
+chosen for it has `moe_fallback = FALSE` and `moe_fallback_reason = "n/a"`.
+These columns are described in the help page of `cacs_run()`. When some rows
+have a substituted formula or cannot be computed, `cacs_derive_rates()` ends
+with one warning that counts them by reason.
+
+## Zero denominators and missing values
+
+A rate whose denominator is zero, or closer to zero than
+`sqrt(.Machine$double.eps)` (about
+`r format(signif(sqrt(.Machine$double.eps), 2), scientific = TRUE)`), is
+`NA`, as is its margin of error, with `moe_fallback = TRUE` and
+`moe_fallback_reason = "zero_denominator"`.
+The check catches only a denominator of about zero; a small positive
+denominator gives a rate and a margin of error as usual.
+
+A missing tract estimate or margin of error is not replaced by zero. If a
+tract kept for an area has a missing estimate, the estimate and the margin of
+error for the area are `NA`; if only the tract's margin of error is missing,
+only the margin of error is `NA`. A rate is `NA` when its numerator or
+denominator, or the margin of error of either, is missing, and the help page
+of `cacs_derive_rates()` describes the columns that mark such rates.
+
+The Census Bureau's data API puts negative annotation codes, such as
+`-555555555`, in place of some estimates and margins of error.
+`cacs_intersect_weight()` sets the six codes (-222222222, -333333333,
+-555555555, -666666666, -888888888, and -999999999) to `NA`, with a warning that
+counts them (a margin-of-error code next to a missing estimate is not counted),
+and they are then handled as the missing values described above. A code in place
+of a tract margin of error, for example, makes the margin of error of the
+variable `NA` for the areas that include the tract, and a rate that uses the
+variable is `NA`. Any other negative margin of error is not read as missing: the
+formulas above square it like any other value, with no warning.
+`cacs_acs_prefetch()` returns every negative margin of error as `NA`.
+
+## A count: its margin of error from the tract margins
+
+The examples below use data bundled with the package. In these data the ACS
+estimates and margins of error are random numbers, drawn separately for each
+tract and variable, so the examples show how the formulas work. One row in
+twenty instead has a missing estimate and the code `-555555555` in place of a
+margin of error. Because the estimate is missing as well, those rows make a
+combined estimate `NA`, and `cacs_intersect_weight()` gives no warning about
+their codes. The draws ignore how the counts of a table nest, so in some tracts
+the labor force is larger than the population 16 years and over. How often the
+proportion formula fails in these data, for instance, says nothing about real
+ACS data.
+
+We use the area whose weights are recomputed in
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`, the
+10-minute drive-time area of site `AL_SITE_17`.
+`cacs_intersect_weight()` combines the tract estimates, and with
+`keep_tract_audit = TRUE` it also keeps the coverage weight of each tract in
+the attribute `cacs_tract_audit`:
+
+```{r}
+#| label: vf-intersect
+#| eval: true
+
+# Drive-time areas and ACS data bundled with the package
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_17"
+drive_time <- 10L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  keep_tract_audit = TRUE,
+  verbose          = FALSE
+)
+
+propagated <- cacs_propagate_moe(weighted, verbose = FALSE)
+```
+
+The number of people below the poverty level (`B17001_002`) is a count, so its
+margin of error comes from the formula for counts (Family A). The package forms
+that formula by applying the handbook's formula for a sum to the weighted tract
+estimates [@census2020understanding, chap. 8]. The code
+below takes the coverage weight $w^{cov}_{sj}$ of each tract (`area_wt`) from
+`cacs_tract_audit` and the published margin of error $M_j$ from the ACS data:
+
+```{r}
+#| label: vf-A-inputs
+#| eval: true
+
+VAR <- "B17001_002"
+
+audit <- attr(weighted, "cacs_tract_audit") |>
+  transmute(GEOID, w_cov = area_wt)
+
+published <- acs |>
+  sf::st_drop_geometry() |>
+  filter(GEOID %in% audit$GEOID, variable == VAR) |>
+  select(GEOID, M_j = moe)
+
+hand_A <- audit |>
+  left_join(published, by = "GEOID") |>
+  arrange(desc(w_cov))
+
+hand_A
+```
+
+One tract lies wholly inside the area, and the other two have coverage
+weights of about `r round(min(hand_A$w_cov), 2)`. The code below computes the
+formula for counts term by term at the 90 percent level, where the divisor and
+the multiplier $z$ are both 1.645:
+
+```{r}
+#| label: vf-A-compute
+#| eval: true
+
+z <- 1.645  # at another level, qnorm(1 - (1 - level) / 2)
+
+se_term    <- hand_A$w_cov * hand_A$M_j / 1.645  # standard error of each term
+hand_moe_A <- z * sqrt(sum(se_term^2))           # z * combined standard error
+
+list(
+  per_tract_var = round(se_term^2, 4),
+  summed_var    = sum(se_term^2),
+  hand_moe_A    = hand_moe_A
+)
+```
+
+The tract inside the area contributes most of the sum. The other two tracts
+have margins of error of `r hand_A$M_j[2]` and `r hand_A$M_j[3]`, but their
+coverage weights reduce their squared terms to about
+`r round(100 * min(hand_A$w_cov)^2, 1)` percent of what they would be if the
+tracts lay wholly inside the area. The package's row for the same variable:
+
+```{r}
+#| label: vf-A-compare
+#| eval: true
+
+pkg_A <- propagated |>
+  filter(variable == VAR) |>
+  select(variable, estimate, moe, moe_formula_effective, moe_fallback)
+
+pkg_A
+
+all.equal(hand_moe_A, pkg_A$moe)
+```
+
+The package records `"weighted_sum"` (Family A) in `moe_formula_effective`,
+and its margin of error, `r round(pkg_A$moe, 1)`, is the value computed by
+hand.
+
+## A rate that falls back to the ratio formula
+
+With `formula_dispatch = "auto"`, the proportion formula is chosen for
+`poverty_rate` and `labor_force_participation`. In the area above it can be
+used for both rates, but in the 10-minute area of site `AL_SITE_08` it cannot
+be used for `poverty_rate`:
+
+```{r}
+#| label: fb-rates
+#| eval: true
+
+iso_08 <- iso[iso$site_id == "AL_SITE_08" & iso$drive_time_min == 10L, ,
+              drop = FALSE]
+propagated_08 <- cacs_propagate_moe(
+  cacs_intersect_weight(iso_sf = iso_08, acs_sf = acs, verbose = FALSE),
+  verbose = FALSE
+)
+rates_08 <- cacs_derive_rates(propagated_08, formula_dispatch = "auto",
+                              verbose = FALSE)
+```
+
+The warning counts one row in which the ratio formula replaced the proportion
+formula. The rows of the two rates for which the proportion formula was chosen
+show which one:
+
+```{r}
+#| label: fb-rows
+#| eval: true
+
+rates_08 |>
+  filter(variable %in% c("poverty_rate", "labor_force_participation")) |>
+  select(variable, estimate, moe, moe_formula_requested,
+         moe_formula_effective, moe_fallback, moe_fallback_reason) |>
+  glimpse()
+```
+
+For `poverty_rate`, the proportion formula was chosen and the ratio formula
+used, with `moe_fallback = TRUE` and `moe_fallback_reason = "negative_variance"`;
+`labor_force_participation` kept the proportion formula. The estimates and
+margins of error of the two counts of the poverty rate show why:
+
+```{r}
+#| label: fb-by-hand
+#| eval: true
+
+counts <- propagated_08 |>
+  filter(variable %in% c("B17001_002", "B17001_001")) |>
+  select(variable, estimate, moe)
+counts
+
+A   <- counts$estimate[counts$variable == "B17001_002"]  # numerator
+B   <- counts$estimate[counts$variable == "B17001_001"]  # denominator
+M_A <- counts$moe[counts$variable == "B17001_002"]
+M_B <- counts$moe[counts$variable == "B17001_001"]
+R   <- A / B
+
+list(
+  relative_moe          = c(numerator = M_A / A, denominator = M_B / B),
+  under_root_proportion = M_A^2 - R^2 * M_B^2,
+  ratio_formula         = sqrt(M_A^2 + R^2 * M_B^2) / B,
+  package               = rates_08$moe[rates_08$variable == "poverty_rate"]
+)
+```
+
+The relative margin of error of the numerator, `r round(M_A / A, 3)`, is
+smaller than that of the denominator, `r round(M_B / B, 3)`, so
+$r$ = `r round((R * M_B / M_A)^2, 2)` is greater than 1 and the value under the
+square root of the proportion formula is negative. The ratio formula gives
+`r signif(sqrt(M_A^2 + R^2 * M_B^2) / B, 4)`, the margin of error that the
+package reports for `poverty_rate`.
+
+## References
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```
+
+```{=html}
+<script>
+// Chrome can leave out a hat that sits over a bar, such as the hat of the
+// estimated average in the formulas above. Written as a spacing character,
+// the hat is always drawn.
+document.querySelectorAll("math mover > mover + mo").forEach(function (mo) {
+  if (mo.textContent === "\u0302") {
+    mo.textContent = "\u02C6";
+  }
+});
+</script>
+```

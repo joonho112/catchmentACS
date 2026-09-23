@@ -1,0 +1,154 @@
+---
+title: "Updating code written for version 0.4"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+vignette: >
+  %\VignetteIndexEntry{Updating code written for version 0.4}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+catchmentACS 0.5.0 corrects the estimates of medians and per-person values and
+checks some arguments more strictly than 0.4 did. For code written for 0.3,
+`vignette("porting-v03-to-v04", package = "catchmentACS")` describes the
+changes made in 0.4.
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+## Medians and per-person values
+
+`cacs_run()` averages the medians and per-person values of three tables of the
+American Community Survey (ACS) over the census tracts that a drive-time area
+overlaps: median household income (`B19013_001`), median home value
+(`B25077_001`), and per capita income (`B19301_001`). A median or per-person
+value from any other table is added up like a count. The weights of the
+average, called area shares, are proportional to the area of each tract's
+overlap with the drive-time area and sum to one for each site, drive time, and
+variable. Before 0.5.0, they summed to one over all the variables of a site
+and drive time taken together. In a call with more than one variable, the
+estimates computed with these weights were therefore too small, and so were
+their margins of error, the half-widths of their confidence intervals (90
+percent by default). When every tract has a row for each variable, they were
+smaller by a factor equal to the number of variables in the call. Counts and
+rates are computed with other weights and did not change.
+
+Medians and per-person values computed with 0.4 need to be computed again. In
+a result, they are the rows whose `weight_basis` is `"area_mean"`. The example
+below finds them in a run on made-up data installed with the package, in which
+the drive-time areas are circles and the ACS estimates are random numbers:
+
+```{r}
+#| label: area-share-rows
+#| eval: true
+
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+site_07 <- data.frame(site_id = "AL_SITE_07", lon = -85.365, lat = 31.655)
+
+result <- cacs_run(
+  site_07, state = "AL",
+  precomputed_isochrones = iso[iso$site_id == "AL_SITE_07", ],
+  acs = acs, verbose = FALSE
+)
+tibble::as_tibble(result) |>
+  filter(weight_basis == "area_mean") |>
+  select(drive_time_min, variable, estimate, moe)
+```
+
+## The `year` argument
+
+`cacs_acs_prefetch()` accepts as `year` only a whole number from 2009 to 2024,
+and so does `cacs_run()` when it downloads the ACS estimates. In 0.4, they
+accepted any year from 2009 to the year before the current one and truncated a
+fractional `year`, such as `2023.5`. In 0.5.0, a fraction and a year after
+2024 give an error. When the estimates are supplied through `acs`,
+`cacs_run()` only records `year`.
+
+## Saved ACS estimates and the Census API key
+
+`cacs_acs_prefetch()` reads estimates saved in the cache without
+a Census API key, as it did in 0.4. In 0.5.0, it looks for them before
+sending any request, where 0.4 first asked tidycensus for the list of ACS
+variables and went on if that failed. It needs the key only to download: when
+no saved result matches the call, or with `force_refresh = TRUE`.
+
+A saved result matches only while the installed versions of R, catchmentACS,
+tidycensus, tigris, and sf stay the same (`?cacs_acs_prefetch`), so copies
+saved with 0.4 are not read. The first call with 0.5.0 downloads the
+estimates again and needs the key. Results that `cacs_intersect_weight()`
+saved in the cache with 0.4 are not reused either; they are computed again.
+From version 0.6.0 on, saved results are kept only until the R session ends
+unless a cache folder that lasts between sessions is set, and the folder used
+by versions 0.5.1 and earlier is not read (see `?cacs_cache_dir`).
+
+## Sites as a plain data frame
+
+`cacs_isochrone()` now also accepts the sites as a base R data frame with the
+columns `site_id`, `lon`, and `lat`, like `site_07` above. In 0.4, it required
+an sf object of points or a tibble, and both are still accepted.
+
+## The `isochrone` column when `cacs_run()` builds the areas
+
+With `output = "list_column"` or `output = "both"`, the list-column form of
+`cacs_run()` has a column `isochrone`, which holds the drive-time area of each
+row as a one-row sf object. In 0.4, it held the areas only when they were
+supplied through `precomputed_isochrones`, and `NULL` when `cacs_run()` built
+them. In 0.5.0 it holds them in both cases. A message about the column is
+shown on every such call, even with `verbose = FALSE`.
+
+## Choices that are not implemented
+
+`weight_method = "population"` is not implemented yet; area weighting
+(`"area"`, the default) is the only method. In 0.5.0, `cacs_run()` gives the
+error before any step runs, with the class `catchmentACS_error_credential`. In
+0.4, the error came at the intersection step, after the areas and the ACS
+estimates were ready, when `bg_pop_sf` was supplied; without `bg_pop_sf`, it
+came at the start, with the class `catchmentACS_error_schema`.
+
+Choosing `provider = "mapbox"` or `provider = "r5r"` to build the areas, or a
+`rates` list other than `cacs_acs_default_rates`, the list of the five built-in
+rates, gives an error, as it did in 0.4.
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```

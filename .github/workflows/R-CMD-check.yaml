@@ -1,0 +1,141 @@
+# Workflow: R-CMD-check
+#
+# Runs on a push to main, master or a branch whose name starts with "cran-",
+# on a pull request to main or master, and when started by hand from the
+# Actions tab. No job is allowed to fail.
+#
+#   - Ubuntu (release and devel) and Windows (release) run on every trigger.
+#   - macOS (release) runs on a push and on a run started by hand, but not on a
+#     pull request. macOS is a separate job so that a pull request does not
+#     start a runner only to skip the check.
+#   - "without Suggests" (Ubuntu, release) installs only the packages that
+#     catchmentACS needs, so the tests, examples and vignettes that use an
+#     optional package must skip it when it is missing.
+#
+# `_R_CHECK_CRAN_INCOMING_: true` adds the checks that CRAN runs on a new
+# submission, some of which use the network; check-r-package turns them off
+# unless the variable is set. `_R_CHECK_THINGS_IN_OTHER_DIRS_: true` (Ubuntu)
+# reports files that the check leaves in the home folder, in /tmp, and in the
+# user cache and data folders. `_R_CHECK_FORCE_SUGGESTS_: false` lets the check
+# pass when an optional package in Suggests is missing. The packages needed for
+# the check itself are still installed by `r-lib/actions/setup-r-dependencies`
+# with `needs: check`.
+
+on:
+  push:
+    branches: [main, master, 'cran-*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+name: R-CMD-check
+
+jobs:
+  R-CMD-check:
+    runs-on: ${{ matrix.config.os }}
+    name: ${{ matrix.config.os }} (${{ matrix.config.r }})
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - {os: ubuntu-latest,  r: 'release', other-dirs: 'true'}
+          - {os: ubuntu-latest,  r: 'devel',   other-dirs: 'true', http-user-agent: 'release'}
+          - {os: windows-latest, r: 'release', other-dirs: 'false'}
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      _R_CHECK_CRAN_INCOMING_: true
+      _R_CHECK_THINGS_IN_OTHER_DIRS_: ${{ matrix.config.other-dirs }}
+      _R_CHECK_FORCE_SUGGESTS_: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ matrix.config.r }}
+          http-user-agent: ${{ matrix.config.http-user-agent }}
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::rcmdcheck
+          needs: check
+
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          upload-snapshots: true
+          build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
+
+  R-CMD-check-macos:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: macos-latest
+    name: macos-latest (release)
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      _R_CHECK_CRAN_INCOMING_: true
+      _R_CHECK_FORCE_SUGGESTS_: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::rcmdcheck
+          needs: check
+
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          upload-snapshots: true
+          build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
+
+  R-CMD-check-no-suggests:
+    runs-on: ubuntu-latest
+    name: ubuntu-latest (release, without Suggests)
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      _R_CHECK_CRAN_INCOMING_: true
+      _R_CHECK_THINGS_IN_OTHER_DIRS_: true
+      _R_CHECK_FORCE_SUGGESTS_: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      # `dependencies: '"hard"'` installs the packages in Depends, Imports and
+      # LinkingTo, and the packages they need, but not the packages in
+      # Suggests. Three packages of Suggests are added because R CMD check
+      # cannot run without them: testthat runs the tests, knitr builds the
+      # vignettes, and rmarkdown gives the vignettes their format. R's own check
+      # with only the required packages (`_R_CHECK_DEPENDS_ONLY_`) also keeps
+      # testthat and knitr available. A package of Suggests that one of these
+      # needs is installed with it, as classInt is with sf and htmltools with
+      # rmarkdown; leaflet, openrouteservice and osrm are not installed.
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"hard"'
+          extra-packages: |
+            any::rcmdcheck
+            any::testthat
+            any::knitr
+            any::rmarkdown
+          needs: check
+
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          upload-snapshots: true
+          build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'

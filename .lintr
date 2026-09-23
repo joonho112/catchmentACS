@@ -1,0 +1,10 @@
+# lintr settings for catchmentACS, in DCF format (one record per line).
+#
+# Two changes to the defaults:
+#   - lines may be 100 characters long, which fits the roxygen blocks and the
+#     cli message strings;
+#   - commented_code_linter is off, because comments and roxygen blocks hold
+#     lines of example code on purpose.
+linters: linters_with_defaults(line_length_linter(100), commented_code_linter = NULL)
+encoding: "UTF-8"
+exclusions: list("R/RcppExports.R", "tests/testthat/_httptest2", "inst/testdata", "inst/extdata", "data-raw", "doc", "vignettes/getting-started.html", "vignettes/getting-started_files")

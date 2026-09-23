@@ -1,0 +1,477 @@
+---
+title: "Rates and their margins of error"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{Rates and their margins of error}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5,
+  fig.align = "center",
+  out.width = "85%"
+)
+```
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+For each drive-time area, `cacs_derive_rates()` computes five rates from
+American Community Survey (ACS) estimates for census tracts, such as the share
+of people below the poverty level. Each rate comes with a margin of error (MOE),
+the half-width of its confidence interval, at the 90 percent level unless
+another level was set with the `level` argument of `cacs_propagate_moe()`,
+whose result `cacs_derive_rates()` takes. A `level` given to
+`cacs_derive_rates()` itself gives an error. The margin of error is computed
+with one of two formulas, chosen for each rate according to the
+argument `formula_dispatch`, and the last section of this article checks two
+rates against hand calculations.
+
+## A rate is the ratio of two weighted counts
+
+Each rate divides one ACS count by another, such as people below the poverty
+level by people for whom poverty status is determined. We use the notation of
+`vignette("methodology", package = "catchmentACS")`. For tract $j$, $A_j$ and
+$B_j$ are the estimates of the numerator and the denominator, and $w^{cov}_{sj}$
+is the coverage weight, the share of the tract's area inside the drive-time area
+of site $s$. The rate for the site is
+
+$$
+\widehat{R}_s = \frac{\widehat{A}_s}{\widehat{B}_s},
+\qquad
+\widehat{A}_s = \sum_j w^{cov}_{sj}\, A_j,
+\qquad
+\widehat{B}_s = \sum_j w^{cov}_{sj}\, B_j .
+$$
+
+The numerator and the denominator are counts and are combined like any other
+count, which assumes that whatever each of the two variables counts is
+spread evenly over the tract's area [@comber2019spatial, p. 8]. The coverage
+weights are explained in
+`vignette("theory-spatial-aggregation", package = "catchmentACS")`.
+
+The package adds up the numerator and the denominator over the tracts first and
+divides once; it does not compute a rate for each tract. When the numerator and
+the denominator cover the same tracts and every $B_j$ is positive, the result is
+an average of the tract rates $A_j / B_j$ with weights $w^{cov}_{sj} B_j$, the
+part of each tract's denominator counted in the drive-time area:
+
+$$
+\widehat{R}_s = \sum_j \frac{w^{cov}_{sj}\, B_j}{\widehat{B}_s} \cdot \frac{A_j}{B_j}.
+$$
+
+An average of the tract rates weighted by coverage weight or by overlap area
+alone would ignore how large each tract's denominator is. Because both counts of
+a tract get the same coverage weight, an area that overlaps only one tract has
+that tract's rate.
+
+The rates are computed from the weighted counts alone, without the geometry.
+
+## The five rates
+
+The numerator and denominator codes of the five rates are listed in
+`cacs_acs_default_rates`:
+
+```{r}
+#| label: rate-codes
+#| eval: true
+
+# ACS codes of the numerator (num) and the denominator (den) of each rate
+cacs_acs_default_rates
+```
+
+| Rate | Numerator | Denominator |
+|---|---|---|
+| `poverty_rate` | people whose income in the past 12 months was below the poverty level (`B17001_002`) | people for whom poverty status is determined (`B17001_001`) |
+| `snap_rate` | households that received Food Stamps or the Supplemental Nutrition Assistance Program (SNAP) in the past 12 months (`B22003_002`) | all households (`B22003_001`) |
+| `ssi_rate` | households with Supplemental Security Income (SSI) in the past 12 months (`B19056_002`) | all households (`B19056_001`) |
+| `unemp_rate` | unemployed people in the civilian labor force (`B23025_005`) | the civilian labor force, among people 16 years and over (`B23025_003`) |
+| `labor_force_participation` | people in the labor force, including the armed forces (`B23025_002`) | people 16 years and over (`B23025_001`) |
+
+In each rate the numerator is part of the denominator: the people or households
+it counts are among those that the denominator counts. `unemp_rate` and
+`labor_force_participation` come from the same ACS table, `B23025`, but divide
+by different counts: the civilian labor force for the unemployment rate, and
+everyone 16 years and over for labor force participation.
+
+The two counts of a rate are summed over different tracts when a tract in the
+area has a row for one of the two codes and not for the other. The package
+keeps rows whose estimate is missing, and a rate that needs such a tract is
+`NA` rather than wrong. The two counts cover different tracts when those rows
+are dropped before `cacs_intersect_weight()` runs, for example by a filter of
+your own. The numerator is then no longer part of the denominator, and the rate
+can be much larger or smaller than the share for the area, even above 1. No
+warning is given. The columns `n_tracts_num` and
+`n_tracts_den` of the rate row, described in the help page of
+`cacs_derive_rates()`, give the two numbers of tracts.
+
+These five are the only rates that `cacs_derive_rates()` computes. Its `rates`
+argument accepts only `cacs_acs_default_rates`; any other list, including a
+subset or a reordering of it, gives an error. Other rates, such as a poverty
+rate for children built from the age and sex groups of table `B17001`, can be
+computed from the results of `cacs_propagate_moe()` or `cacs_run()`. These have
+a row with the weighted count and its margin of error for each ACS count
+requested. A numerator that adds up several of these counts gets its margin of
+error from the formula that the Census Bureau's handbook gives for a sum, which
+again treats the counts as independent [@census2020understanding, chap. 8]. The
+formulas below then give the margin of error of the rate.
+
+## Two formulas for the margin of error of a rate
+
+The Census Bureau's handbook has a formula for a proportion (its formula 6) and
+one for a ratio (formula 7). A proportion is a ratio whose numerator is part of
+its denominator; the ratio formula is for a ratio whose numerator is not. Both
+compute the margin of error of $\widehat{R}_s$ from the margins of error
+$M(\widehat{A}_s)$ and $M(\widehat{B}_s)$ of the two weighted counts
+[@census2020understanding, chap. 8]:
+
+$$
+\begin{aligned}
+\text{proportion formula:} \quad
+M(\widehat{R}_s) &= \frac{\sqrt{M(\widehat{A}_s)^2 - \widehat{R}_s^2\, M(\widehat{B}_s)^2}}{\widehat{B}_s},\\
+\text{ratio formula:} \quad
+M(\widehat{R}_s) &= \frac{\sqrt{M(\widehat{A}_s)^2 + \widehat{R}_s^2\, M(\widehat{B}_s)^2}}{\left| \widehat{B}_s \right|}.
+\end{aligned}
+$$
+
+The package's warnings and the help page of `cacs_propagate_moe()` call them C1
+and C2, and the columns `moe_formula_requested` and `moe_formula_effective`
+record them as `"proportion_subset"` and `"general_ratio_conservative"`. The
+ratio formula divides by the absolute value of the denominator, which the hand
+calculations below use as well; for the five rates, whose denominators are
+counts, that is the denominator itself.
+
+The two values under the square root differ by
+$2 \widehat{R}_s^2 M(\widehat{B}_s)^2$, so the ratio formula never gives the
+narrower margin of error. How much wider it is varies from rate to rate and
+from one area to another, and
+`vignette("theory-moe-propagation", package = "catchmentACS")` gives the factor.
+Both formulas start from margins of error of the weighted counts that treat the
+tract estimates as independent, an assumption discussed in the same article.
+
+## The formula used for each rate
+
+By default, `cacs_derive_rates()` and `cacs_run()` use the ratio formula for all
+five rates, although the numerator of each is part of its denominator. For these
+proportions the handbook gives the proportion formula, so the default is a
+choice of the package. The argument `formula_dispatch` of either function takes
+one of three values:
+
+::: {style="overflow-x: auto;"}
+
+| Rate | `"general_ratio_conservative"` (default) | `"auto"` | `"proportion_subset"` |
+|---|---|---|---|
+| `poverty_rate` | ratio | proportion | proportion |
+| `labor_force_participation` | ratio | proportion | proportion |
+| `snap_rate` | ratio | ratio | ratio |
+| `ssi_rate` | ratio | ratio | ratio |
+| `unemp_rate` | ratio | ratio | ratio |
+
+:::
+
+`"proportion_subset"` gives the same formulas as `"auto"` and, in addition, a
+warning naming the three rates that keep the ratio formula. `unemp_rate` keeps
+the ratio formula with every value of `formula_dispatch`, although its
+numerator is part of its denominator, to reproduce the 2025 analysis the
+package was first written for. The column `moe_formula_requested` of each rate
+row records the formula chosen for the rate. For `snap_rate`, `ssi_rate`, and
+`unemp_rate`, the proportion formula can be applied by hand to the `estimate`
+and `moe` of the rows of the two ACS codes, unless the value under its square
+root is negative.
+
+If the proportion formula is chosen for a rate and the value under its square
+root is negative, the package uses the ratio formula for that row instead, as
+the handbook advises.
+`vignette("theory-moe-propagation", package = "catchmentACS")` describes the
+columns that record the substitution.
+
+## Two rates computed by hand
+
+The checks below compare hand calculations with the output of
+`cacs_derive_rates()` for two rates: `snap_rate` with the ratio formula and
+`labor_force_participation` with the proportion formula. For
+`labor_force_participation`, the margin of error from the ratio formula is also
+computed by hand, for comparison.
+
+The example is the 15-minute area around site `AL_SITE_03` in the data shipped
+with the package. Its drive-time area is a circle and its tract estimates are
+made-up values, so the rates show the arithmetic and are not estimates for any
+real area. The code runs only the three steps of `cacs_run()` that come after
+the download and the routing, and it uses `formula_dispatch = "auto"` so that
+two of the rates use the proportion formula:
+
+```{r}
+#| label: vf-pipeline
+#| eval: true
+
+# Drive-time areas and made-up ACS data bundled with the package
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_03"
+drive_time <- 15L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  verbose          = FALSE
+)
+propagated <- cacs_propagate_moe(weighted, verbose = FALSE)
+
+# "auto": the proportion formula for poverty_rate and
+# labor_force_participation, the ratio formula for the other three rates
+rates <- suppressWarnings(
+  cacs_derive_rates(propagated, formula_dispatch = "auto", verbose = FALSE)
+)
+```
+
+`suppressWarnings()` hides the warning that `cacs_derive_rates()` gives at the
+end, which counts the rows where the ratio formula replaced the proportion
+formula.
+
+The checks read $\widehat{A}_s$, $\widehat{B}_s$, and their variances, the
+numbers that `cacs_derive_rates()` itself uses, from the attribute
+`cacs_aggregation_carriers` of the result of `cacs_intersect_weight()`.
+`cacs_derive_rates()` removes that attribute, so the checks below need the
+result of the earlier step, not a rate table or a result of `cacs_run()`,
+where it is `NULL`.
+The variances (`var_total_raw`) are squared standard errors (SE), so a margin of
+error is $M(\widehat{A}_s) = z\,\mathrm{SE}(\widehat{A}_s)$, with $z = 1.645$
+at the 90 percent level:
+
+```{r}
+#| label: vf-carriers
+#| eval: true
+
+z      <- 1.645
+totals <- attr(weighted, "cacs_aggregation_carriers")
+
+# The weighted count (est_total) or its variance (var_total_raw) for one ACS code
+total_of <- function(code, col) totals[[col]][totals$variable == code]
+
+totals |>
+  filter(variable %in% c(
+    "B22003_002", "B22003_001",   # snap_rate  num / den
+    "B23025_002", "B23025_001",   # labor_force_participation num / den
+    "B17001_002", "B17001_001"    # poverty_rate num / den
+  )) |>
+  select(variable, est_total, var_total_raw, weight_sum, n_tracts)
+```
+
+In this example, `weight_sum` equals `n_tracts`: the
+`r totals$n_tracts[totals$variable == "B17001_001"]` tracts lie entirely inside the
+drive-time area, so each weighted count is the plain sum of the tract estimates.
+
+## `snap_rate` with the ratio formula
+
+`snap_rate` uses the ratio formula with every value of `formula_dispatch`.
+Written with the variances, the formula is
+$M(\widehat{R}_s) = z\sqrt{\mathrm{SE}(\widehat{A}_s)^2 + \widehat{R}_s^2\, \mathrm{SE}(\widehat{B}_s)^2}\,/\,\widehat{B}_s$:
+
+```{r}
+#| label: vf-c2-hand
+#| eval: true
+
+A_snap    <- total_of("B22003_002", "est_total")
+B_snap    <- total_of("B22003_001", "est_total")
+VarA_snap <- total_of("B22003_002", "var_total_raw")
+VarB_snap <- total_of("B22003_001", "var_total_raw")
+
+R_snap        <- A_snap / B_snap                                     # the rate A / B
+hand_moe_snap <- z * sqrt(VarA_snap + R_snap^2 * VarB_snap) / abs(B_snap)
+
+pkg_snap <- rates |>
+  filter(variable == "snap_rate") |>
+  select(estimate, moe, moe_formula_effective, moe_fallback)
+
+list(
+  A = A_snap, B = B_snap,
+  hand_estimate = R_snap,
+  hand_moe_C2   = hand_moe_snap,
+  pkg           = pkg_snap
+)
+```
+
+The package's row records the ratio formula with no substitution, and its
+estimate, `r sprintf("%.4f", pkg_snap$estimate)`, and margin of error,
+`r sprintf("%.4f", pkg_snap$moe)`, are the values computed by hand:
+
+```{r}
+#| label: vf-c2-assert
+#| eval: true
+
+all.equal(
+  c(estimate = R_snap, moe = hand_moe_snap),
+  c(estimate = pkg_snap$estimate, moe = pkg_snap$moe)
+)
+```
+
+## `labor_force_participation` with the proportion formula
+
+With `formula_dispatch = "auto"`, `labor_force_participation` uses the
+proportion formula,
+$M(\widehat{R}_s) = z\sqrt{\mathrm{SE}(\widehat{A}_s)^2 - \widehat{R}_s^2\, \mathrm{SE}(\widehat{B}_s)^2}\,/\,\widehat{B}_s$,
+unless the value under the square root is negative. The code computes that
+value, the margin of error from the proportion formula, and, for comparison, the
+margin of error from the ratio formula:
+
+```{r}
+#| label: vf-c1-hand
+#| eval: true
+
+A_lfp    <- total_of("B23025_002", "est_total")
+B_lfp    <- total_of("B23025_001", "est_total")
+VarA_lfp <- total_of("B23025_002", "var_total_raw")
+VarB_lfp <- total_of("B23025_001", "var_total_raw")
+
+R_lfp       <- A_lfp / B_lfp
+under_root  <- VarA_lfp - R_lfp^2 * VarB_lfp           # under the proportion formula's root
+hand_moe_C1 <- z * sqrt(under_root) / B_lfp
+hand_moe_C2 <- z * sqrt(VarA_lfp + R_lfp^2 * VarB_lfp) / abs(B_lfp)  # for comparison
+
+list(
+  under_root  = under_root,     # positive, so the proportion formula can be used
+  hand_moe_C1 = hand_moe_C1,
+  hand_moe_C2 = hand_moe_C2     # the ratio formula
+)
+```
+
+The value under the square root is positive, so the proportion formula applies.
+In this area, the proportion formula gives a margin of error of
+`r sprintf("%.4f", hand_moe_C1)`, and the ratio formula gives
+`r sprintf("%.4f", hand_moe_C2)`, `r sprintf("%.1f", hand_moe_C2 / hand_moe_C1)`
+times as wide. The package's row records the proportion formula with no
+substitution, and its margin of error is the value computed by hand:
+
+```{r}
+#| label: vf-c1-assert
+#| eval: true
+
+pkg_lfp <- rates |>
+  filter(variable == "labor_force_participation") |>
+  select(estimate, moe, moe_formula_effective, moe_fallback, moe_fallback_reason)
+
+pkg_lfp
+
+all.equal(hand_moe_C1, pkg_lfp$moe)
+```
+
+## All five rates of the example
+
+The rate rows of the example record, for each rate, the formula chosen and the
+formula used, and the tract counts:
+
+```{r}
+#| label: vf-routing-table
+#| eval: true
+
+rates |>
+  filter(estimand_family == "derived_rate") |>
+  select(variable, estimate, moe,
+         moe_formula_requested, moe_formula_effective,
+         moe_fallback, moe_fallback_reason,
+         n_tracts, n_tracts_num, n_tracts_den) |>
+  print(width = Inf)
+```
+
+`moe_formula_requested` follows the `"auto"` column of the table in the formula
+section: `"proportion_subset"` for `poverty_rate` and
+`labor_force_participation`, and `"general_ratio_conservative"` for the other
+three rates. `moe_formula_effective` differs from it only for `poverty_rate`.
+`n_tracts` is `NA` on every rate row, and `n_tracts_num` equals `n_tracts_den`
+because each tract of the area has a row for every ACS code. `poverty_rate`
+records a substitution: in this area the value under the square root of its
+proportion formula is negative, so the ratio formula was used.
+`vignette("theory-moe-propagation", package = "catchmentACS")` works through
+such a case by hand.
+
+## A rate whose numerator is missing
+
+A rate and its margin of error are `NA` when the numerator or the denominator,
+or the margin of error of either, is missing for the site and drive time. This
+happens when one of the two ACS codes has no rows in the ACS data or when a tract
+in the area has a missing estimate or margin of error for one of them. It also
+happens for every rate of a pair with no tract left. The code below removes
+every row of the SSI numerator, `B19056_002`, from the example data and runs the
+three steps again, this time with the default value of `formula_dispatch`:
+
+```{r}
+#| label: vf-carrier-missing
+#| eval: true
+
+acs_drop <- acs[sf::st_drop_geometry(acs)$variable != "B19056_002", ]
+
+weighted_d   <- cacs_intersect_weight(
+  iso_sf = iso_one, acs_sf = acs_drop,
+  weight_method = "area", verbose = FALSE
+)
+propagated_d <- cacs_propagate_moe(weighted_d, verbose = FALSE)
+rates_d      <- suppressWarnings(cacs_derive_rates(propagated_d, verbose = FALSE))
+
+rates_d |>
+  filter(estimand_family == "derived_rate") |>
+  select(variable, estimate, moe,
+         moe_fallback_reason, failure_origin, n_tracts_num, n_tracts_den) |>
+  print(width = Inf)
+```
+
+Here `suppressWarnings()` hides the warning at the end, which counts the rate
+rows that are `NA` for this reason. `ssi_rate` has `NA` in `estimate` and
+`moe`, and `"carrier"` in `failure_origin`, the column that records the step at
+which a row failed; `"carrier"` means that a count or margin of error that the
+rate needs is missing. `n_tracts_num` and `n_tracts_den` are `NA`, and
+`moe_fallback_reason` is `"n/a"` because no margin-of-error formula was
+applied. The other four rates have the same estimates as before. With the
+default `formula_dispatch`, all four use the ratio formula, so
+`labor_force_participation` now has the ratio-formula margin of error computed
+for comparison in the second check, and `poverty_rate` records no
+substitution.
+
+## References
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```

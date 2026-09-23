@@ -1,0 +1,316 @@
+---
+title: "Mapping each step for one Birmingham site"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+vignette: >
+  %\VignetteIndexEntry{Mapping each step for one Birmingham site}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5,
+  out.width = "100%"
+)
+```
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+catchmentACS has functions that map, for one site, how `cacs_run()` turns
+American Community Survey (ACS) estimates for census tracts into estimates for
+the site's drive-time area. This article draws their four maps for a site in
+Birmingham, Alabama:
+
+1. `cacs_plot_site_isochrone()`: the site and its drive-time area (isochrone),
+   the area within a given driving time of the site.
+2. `cacs_plot_site_intersection()`: the census tracts that overlap the
+   drive-time area, shaded by the share of each tract's area that lies inside
+   it.
+3. `cacs_plot_site_weighted()`: the estimates of one ACS variable for those
+   tracts.
+4. `cacs_plot_site_rates()`: the five rates for the drive-time area, with their
+   margins of error.
+
+`cacs_plot_site_pipeline()` builds all four maps in one call. The maps are
+interactive and need the leaflet package.
+`vignette("getting-started", package = "catchmentACS")` shows how to run
+`cacs_run()` and read its result.
+
+The maps are drawn from `visual_walkthrough_fixture.rds`, a file installed with
+the package that holds data for a real place. The site, `AL_BHM_01`, is a point
+near the Vulcan statue on Red Mountain, south of downtown Birmingham. Its
+10-minute drive-time area was computed on May 27, 2026, by the Open Source
+Routing Machine (OSRM) with the default settings of `cacs_isochrone()`. The
+requests went to the public OSRM demo server, and the osrm package drew the
+area from travel times to a grid of 30 by 30 points around the site
+(`res = 30`). The server routes on OpenStreetMap road data, © OpenStreetMap
+contributors, available under the Open Database License
+(<https://www.openstreetmap.org/copyright>); the date of the data it used is not
+recorded. An area computed later, or with another `res`, can differ, and so can
+the estimates computed from it.
+
+The file also holds the census tracts within 2 km of the drive-time area: their
+boundaries and their ACS 5-year estimates for 2019–2023, with margins of error,
+for the variables in `cacs_acs_default_vars`, as downloaded by
+`cacs_acs_prefetch()`. It also holds the result of `cacs_run()` for the site,
+computed from these inputs. The map functions only draw such results; they do
+not contact a routing service or the Census Bureau.
+
+```{r}
+#| label: read-data
+#| eval: true
+
+walkthrough <- readRDS(system.file("extdata", "visual_walkthrough_fixture.rds",
+                                   package = "catchmentACS"))
+names(walkthrough)
+one_site <- walkthrough$anchor_site
+one_site
+```
+
+`iso_sf` holds the drive-time area and `sites_df` the site's point. `tract_sf`
+and `acs_sf` are the same table of tract boundaries and estimates, with one row
+for each tract and variable; the map functions take the boundaries and the
+estimates through separate arguments, which can be the same object.
+`run_result` is the result of `cacs_run()`, and `anchor_site` gives the
+`site_id` used below as `one_site`. For your own sites, the maps take your site
+points and the results of `cacs_isochrone()`, `cacs_acs_prefetch()`, and
+`cacs_run()` in place of these elements.
+
+## Stage 1: the drive-time area
+
+`cacs_plot_site_isochrone()` draws the drive-time areas of a site, in one color
+for each drive time, and marks the site with a red point. Clicking the point
+shows the site's `site_id`, name, and coordinates.
+
+```{r}
+#| label: stage1
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_isochrone(
+  site_id  = one_site,
+  iso_sf   = walkthrough$iso_sf,
+  sites_df = walkthrough$sites_df
+)
+```
+
+The example has one drive-time area, for 10 minutes. The area is built from
+travel times on the road network, and its edge lies much farther from the site
+in some directions than in others.
+
+## Stage 2: the tracts and their weights
+
+`cacs_plot_site_intersection()` overlays the drive-time area on the census
+tracts. It shades the part of each tract that lies inside the area by the
+tract's coverage weight, labeled `area_wt` on the map,
+
+$$
+\text{area\_wt}_j \;=\;
+\frac{\text{area}\!\left(\text{drive-time area} \cap \text{tract}_j\right)}
+     {\text{area}\!\left(\text{tract}_j\right)},
+$$
+
+the share of the tract's area that lies inside the drive-time area. The weight
+is 0 when the two do not overlap and 1 when the whole tract is inside. The
+function measures both areas on the equal-area projection EPSG:5070, as
+`cacs_intersect_weight()` does, and a tract's area includes any water inside
+its boundary. The colors run from 0 to 1 on every map that this function
+draws, so a weight has the same color on all of them.
+
+```{r}
+#| label: stage2
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_intersection(
+  site_id  = one_site,
+  iso_sf   = walkthrough$iso_sf,
+  tract_sf = walkthrough$tract_sf,
+  sites_df = walkthrough$sites_df
+)
+```
+
+The tracts that lie wholly inside the drive-time area have a weight of 1 and
+are yellow. Along the edge of the area, the tracts cut by it have smaller
+weights and darker colors, down to dark purple for tracts that lie almost
+entirely outside. Hovering over a tract shows its `GEOID` and weight; clicking
+it also shows `intersection_km2`, the area of its part inside the drive-time
+area in square kilometers.
+
+Counts, including the two counts of each rate, are added up with these weights.
+A tract with 18 percent of its area inside the drive-time area adds 18 percent
+of its count, such as its number of people below the poverty level, to the
+count for the area. This assumes that whatever the count counts is spread
+evenly over the tract's area: for the number of people below the poverty
+level, that those people are spread evenly, and not only the population as a
+whole;
+`vignette("theory-spatial-aggregation", package = "catchmentACS")` discusses
+this assumption and when it fails. Medians and per-person values are averaged
+with other weights, the area shares, which
+`vignette("methodology", package = "catchmentACS")` describes.
+
+## Stage 3: one ACS variable
+
+`cacs_plot_site_weighted()` shades the same parts of the tracts by each tract's
+published estimate for one ACS variable, before any weighting, and draws the
+outline of the drive-time area on top. The map below shows `B17001_002`, the
+number of people whose income in the past 12 months was below the poverty
+level. Clicking a tract shows the same values as the Stage 2 map and also the
+variable code, the tract's estimate, its margin of error (MOE), and the
+estimate multiplied by the coverage weight, labeled `area_wt x estimate`. The
+MOE is the half-width of the 90 percent confidence interval published with the
+estimate.
+
+```{r}
+#| label: stage3
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_weighted(
+  site_id  = one_site,
+  iso_sf   = walkthrough$iso_sf,
+  tract_sf = walkthrough$tract_sf,
+  acs_sf   = walkthrough$acs_sf,
+  variable = "B17001_002",
+  sites_df = walkthrough$sites_df
+)
+```
+
+Darker greens mark larger counts. A count describes a whole tract and grows
+with the tract's population, so a dark tract need not have a high poverty rate.
+For a count with no missing tract estimates, as here, the products in the
+pop-ups add up to the estimate that `cacs_run()` gives for the drive-time area,
+the numerator of the poverty rate in Stage 4. A tract adds much to that total
+only when both its count and its weight are large. Here the two tracts with the
+largest counts lie mostly outside the drive-time area, as their weights in the
+Stage 2 map show. The map shows only small parts of them, and they add only
+small parts of their counts.
+
+Another variable in `acs_sf` is mapped by changing `variable`. The argument
+`variable_family` only chooses the colors; its values are those of the
+`estimand_family` column of a `cacs_run()` result: `"spatial_total"` (a count,
+the default), `"median_proxy"` (a median), `"area_weighted_scalar_proxy"` (a
+per-person value), and `"derived_rate"` (a rate). The function does not check
+it against `variable`. Median household income, for example, is mapped with
+`variable = "B19013_001"` and `variable_family = "median_proxy"`.
+
+For a median or a per-person value, the estimate that `cacs_run()` gives for
+the drive-time area is an average of the tract estimates weighted by area
+shares, so the products in the pop-ups do not add up to it. The column
+`estimand_family` of the result shows how each variable was combined;
+`vignette("methodology", package = "catchmentACS")` lists the ACS tables that
+are read as medians or per-person values and what happens to a median from
+another table.
+
+## Stage 4: the five rates
+
+`cacs_plot_site_rates()` draws the site and the outline of its drive-time
+areas. Clicking the site opens a pop-up with the site's values in `run_result`
+for the five rates of `cacs_acs_default_rates`: `poverty_rate`, `snap_rate`,
+`ssi_rate`, `unemp_rate`, and `labor_force_participation`. For each rate, the
+pop-up shows the estimate and its MOE as proportions and the numbers of tracts
+combined for the numerator and the denominator. It also shows the formula used
+for the MOE and whether the chosen formula could not be used (`moe_fallback`).
+
+```{r}
+#| label: stage4
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+cacs_plot_site_rates(
+  site_id    = one_site,
+  iso_sf     = walkthrough$iso_sf,
+  run_result = walkthrough$run_result,
+  sites_df   = walkthrough$sites_df
+)
+```
+
+Here the numerator and the denominator of each rate combine the same tracts,
+and no rate has a fallback. The MOE of every rate comes from the ratio formula
+(`general_ratio_conservative`), the formula for a ratio whose numerator is not
+part of its denominator. `cacs_run()` uses it for all five rates by default,
+although the numerator of each is part of its denominator.
+`vignette("theory-derived-rates", package = "catchmentACS")` describes the
+formula for that case, the proportion formula, and the argument
+`formula_dispatch` that chooses between the two. Like every margin of error
+from catchmentACS, the margins of error of the rates treat the tract estimates
+as independent and include no error from area weighting or from the drive-time
+area itself (see the Limitations section of
+`vignette("methodology", package = "catchmentACS")`).
+
+A rate with `moe_fallback = TRUE` has an asterisk before its name in the
+pop-up, and a value that is `NA` shows as `n/a`. The help page of
+`cacs_plot_site_rates()` says when the asterisk appears, and that of
+`cacs_derive_rates()` lists the cases in which a rate is `NA`. When
+`run_result` has rates for several drive times of the site, the pop-up lists
+each rate once for each drive time and does not show the drive times. A
+`run_result` narrowed to one drive time, such as
+`run_result[run_result$drive_time_min == 10, ]`, gives one entry for each rate.
+
+## All four maps in one call
+
+`cacs_plot_site_pipeline()` calls the four functions above with the same site
+and map settings and returns the four maps in a list of class
+`cacs_site_plot_pipeline`:
+
+```{r}
+#| label: pipeline
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+maps <- cacs_plot_site_pipeline(
+  site_id    = one_site,
+  iso_sf     = walkthrough$iso_sf,
+  tract_sf   = walkthrough$tract_sf,
+  acs_sf     = walkthrough$acs_sf,
+  run_result = walkthrough$run_result,
+  sites_df   = walkthrough$sites_df,
+  variable   = "B17001_002"
+)
+names(maps)
+```
+
+Printing the list at the console gives a short summary and draws no map. Each
+element is a leaflet map, which is drawn when the element is printed:
+
+```{r}
+#| label: pipeline-display
+#| eval: !expr requireNamespace("leaflet", quietly = TRUE)
+
+# The map of cacs_plot_site_rates(), as in Stage 4
+maps$rates
+```
+
+The elements are HTML widgets, so `htmlwidgets::saveWidget()` can save one as
+an HTML file, and a Shiny app can show one with `leaflet::leafletOutput()` and
+`leaflet::renderLeaflet()`. `?cacs_plot_site_pipeline` describes the
+arguments, among them `drive_time_min`, which chooses the drive time of the
+second and third maps for a site with several drive-time areas.
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```

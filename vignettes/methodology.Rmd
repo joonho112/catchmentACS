@@ -1,0 +1,491 @@
+---
+title: "How the estimates are computed"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    math_method: mathml
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{How the estimates are computed}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: knitr-options
+#| include: false
+
+knitr::opts_chunk$set(
+  collapse = FALSE,
+  comment = "#>",
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5,
+  fig.align = "center",
+  out.width = "85%"
+)
+```
+
+```{r}
+#| label: setup
+#| eval: true
+
+library(catchmentACS)
+library(dplyr)
+library(sf)  # needed to subset the bundled sf objects with [
+```
+
+```{r}
+#| label: setup-cache
+#| include: false
+
+# Compute every result in this article instead of reading saved ones; the
+# option is restored at the end of the article.
+old_options <- options(catchmentACS.cache_enabled = FALSE)
+```
+
+catchmentACS computes estimates for drive-time areas from American Community
+Survey (ACS) estimates for census tracts. This article gives the whole
+calculation in one place: the weights used for each kind of quantity, the
+formulas for the margins of error, and what the calculations assume. Three
+other articles derive what is stated here, one for the weights
+(`vignette("theory-spatial-aggregation", package = "catchmentACS")`), one for
+the margins of error (`vignette("theory-moe-propagation", package =
+"catchmentACS")`), and one for the rates
+(`vignette("theory-derived-rates", package = "catchmentACS")`).
+
+The examples run without network access on data bundled with the package:
+drive-time areas that are circles with a radius of 1 km per minute of drive
+time, and random ACS values for small squares standing in for census tracts.
+The numbers in this article therefore show how the calculations work and
+describe no real place.
+
+## From tract estimates to drive-time areas
+
+The quantity of interest is a characteristic of the people or households in the
+drive-time area of a site, such as the number of people below the poverty level
+or the poverty rate. The package starts from ACS estimates for census tracts,
+each published with a margin of error (MOE), the half-width of its 90 percent
+confidence interval. Tract boundaries do not follow those of drive-time areas.
+The package therefore combines the estimates of the tracts that overlap a
+drive-time area, with weights computed from the areas of the overlaps, and
+combines their margins of error with the same weights.
+
+`cacs_run()` does this in five steps, each carried out by a function that can
+also be called on its own:
+
+1. `cacs_acs_prefetch()` downloads the ACS 5-year estimates and their margins of
+   error for the census tracts of one state, using the tidycensus package; a
+   download needs a Census API key.
+2. `cacs_isochrone()` gets the drive-time areas around each site, one for each
+   drive time, from a routing service.
+3. `cacs_intersect_weight()` projects the drive-time areas and the tracts to
+   EPSG:5070 (NAD83 / Conus Albers), an equal-area map projection, and measures
+   there, in square meters, the area of each tract and of its part inside each
+   drive-time area. From these areas it computes weights and combines the tract
+   estimates and their margins of error.
+4. `cacs_propagate_moe()` recomputes the margins of error at the chosen
+   confidence level and records the formula used for each row.
+5. `cacs_derive_rates()` computes the five rates listed in
+   `cacs_acs_default_rates`, such as the poverty rate, each as the ratio of two
+   combined counts, with its margin of error.
+
+Only the first two steps use the network, and the help page of `cacs_run()`
+describes how to supply their results instead. This article describes the
+calculations of steps 3 to 5.
+
+## The symbols, the weights, and the estimates
+
+The package computes every result separately for each site and drive time, so
+the symbols below, the two weights, and the three estimates all describe one
+site $s$ at one drive time. The three articles named above use the same
+symbols.
+
+| Symbol | Meaning |
+|---|---|
+| $I_s$ | the drive-time area of site $s$: the area reachable from the site within the drive time, which contains the areas for shorter drive times |
+| $T_j$ | census tract $j$ |
+| $I_s \cap T_j$ | the part of tract $j$ inside the drive-time area |
+| $\lvert\,\cdot\,\rvert$ | area, in square meters on EPSG:5070 |
+| $Y_j$ | the ACS estimate of a count for tract $j$, such as the number of people below the poverty level |
+| $X_j$ | the ACS estimate of a median or a per-person value for tract $j$, such as median household income or per capita income |
+| $A_j$, $B_j$ | the ACS estimates of the numerator and the denominator of a rate for tract $j$ |
+| $M_j$ | the margin of error published with a tract estimate, at the 90 percent confidence level |
+
+Two weights are computed from these areas. The coverage weight of tract $j$ is
+the share of the tract's area that lies inside the drive-time area,
+
+$$
+w^{cov}_{sj} = \frac{\lvert I_s \cap T_j \rvert}{\lvert T_j \rvert},
+$$
+
+and the area share of tract $j$ is the area of its overlap divided by the total
+overlap area of all the tracts,
+
+$$
+w^{mean}_{sj} = \frac{\lvert I_s \cap T_j \rvert}{\sum_k \lvert I_s \cap T_k \rvert}.
+$$
+
+Here and below, a sum over tracts runs over the tracts kept for the site, drive
+time, and variable. A tract is kept if its coverage weight is above the
+`min_weight` argument of `cacs_intersect_weight()` and the ACS data have a row
+for it and the variable. A tract with no row for the variable is left out
+without a warning: a count then leaves out that tract's share, while an average
+weighted by area shares uses the remaining tracts, whose area shares again sum
+to one. The
+column `weight_basis` of the result records the weight used: `"coverage"` or
+`"area_mean"`.
+
+A count is estimated by the coverage-weighted sum of the tract estimates, a
+median or a per-person value by the average of the tract estimates weighted by
+area shares, and a rate by the ratio of two coverage-weighted sums:
+
+$$
+\widehat{Y}_s = \sum_j w^{cov}_{sj}\, Y_j,
+\qquad
+\widehat{\bar X}_s = \sum_j w^{mean}_{sj}\, X_j,
+\qquad
+\widehat{R}_s = \frac{\widehat{A}_s}{\widehat{B}_s}
+= \frac{\sum_j w^{cov}_{sj}\, A_j}{\sum_j w^{cov}_{sj}\, B_j}.
+$$
+
+The two sums of a rate run over the tracts kept for their own variable, so a
+tract that has a row for one of the two and not the other enters only one of
+them.
+
+The coverage-weighted sum assumes that whatever a variable counts is spread
+evenly over each tract's area. For the number of people below the poverty
+level, it assumes that those people are spread evenly, not only the population
+as a whole. The average weighted by area shares stands in
+for the median or per-person value of the drive-time area. Its weights follow
+area and ignore how many people live in each tract, so it can be far from that
+value when the overlapping tracts differ in population density. If any of the
+tracts has a missing estimate for the variable, the combined estimate and its
+margin of error are both `NA`; if only the tract's margin of error is missing,
+only the margin of error is `NA`.
+
+ACS margins of error are at the 90 percent level, where the margin of error $M$
+of an estimate is 1.645 times its standard error (SE)
+[@census2020understanding, chap. 7]:
+
+$$
+M = 1.645\,\mathrm{SE}, \qquad \mathrm{SE} = \frac{M}{1.645}.
+$$
+
+The package divides each tract margin of error by 1.645 and combines the
+resulting standard errors into the standard error of a combined estimate,
+written $\mathrm{SE}(\widehat{Y}_s)$ for a count and in the same way for the
+other estimates. It reports the margin of error
+$M(\widehat{Y}_s) = z\,\mathrm{SE}(\widehat{Y}_s)$, where $z = 1.645$ at the
+default level of 90 percent.
+`vignette("theory-moe-propagation", package = "catchmentACS")` describes other
+levels, which are set with the `level` argument of `cacs_propagate_moe()`.
+
+## Kinds of estimate and their weights
+
+The column `estimand_family` of the results names the kind of estimate in each
+row. The kind decides which weights combine the tract estimates, as recorded in
+`weight_basis`, and which formula gives the margin of error (see the section
+"Margins of error"):
+
+::: {style="overflow-x: auto;"}
+
+| `estimand_family` | Kind of estimate | Estimate | Weights (`weight_basis`) |
+|---|---|---|---|
+| `"spatial_total"` | a count, such as the number of people below the poverty level (`B17001_002`) | $\widehat{Y}_s$ | coverage weights $w^{cov}_{sj}$ (`"coverage"`) |
+| `"median_proxy"` | a median, such as median household income (`B19013_001`) | $\widehat{\bar X}_s$ | area shares $w^{mean}_{sj}$ (`"area_mean"`) |
+| `"area_weighted_scalar_proxy"` | a per-person value: per capita income (`B19301_001`) | $\widehat{\bar X}_s$ | area shares $w^{mean}_{sj}$ (`"area_mean"`) |
+| `"derived_rate"` | one of the five rates that `cacs_derive_rates()` adds, such as the poverty rate | $\widehat{R}_s$ | coverage weights, for the numerator and the denominator (`"coverage"`) |
+| `"metadata_only"` | an ACS code that is not combined (see below) | none: `estimate` and `moe` are `NA` | none (`"none"`) |
+
+:::
+
+If whatever a count counts is spread evenly over the tract, as the
+coverage-weighted sum assumes, the part of a tract inside the drive-time area
+holds the same share of that count as of the tract's area. The count is
+therefore split by the coverage weight: a tract half inside the drive-time area
+adds half of its count. The assumption is made for each variable on its own,
+and it asks more of a subgroup than of the population as a whole. A tract whose
+residents below the poverty level all live in one corner can have an evenly
+spread population and an unevenly spread poverty count. A median or a per-person value does not
+scale with the part of the tract that is inside. The package averages these
+values with area shares instead. A rate divides two counts, each added up with
+coverage weights.
+
+As the help page of `cacs_intersect_weight()` describes, the kind of estimate
+is read from the ACS code alone. Codes of tables `B19013` (median household
+income) and `B25077` (median value of owner-occupied housing units) are taken
+as medians, and codes of table `B19301` (per capita income) as per-person
+values. Any other code of the form `B`, five digits, an underscore, and three
+digits, such as `B17001_002`, is taken as a count. Median gross rent
+(`B25064_001`), for instance, comes from another table and is summed with
+coverage weights as if it were a count; the package gives no warning. A code of
+any other form, such as one from a table whose name starts with `C` or `S` or
+ends in a letter (`B17001A`), is not combined: its row has the kind
+`"metadata_only"` and `NA` values. `cacs_propagate_moe()` stops with an error
+on such rows, and so does `cacs_run()`.
+
+## A worked example with both weights
+
+This example follows two variables through the 10-minute drive-time area of
+site `AL_SITE_19`: the number of people below the poverty level (`B17001_002`),
+a count, and per capita income (`B19301_001`), a per-person value. The call
+below sets `keep_tract_audit = TRUE`, so the result also lists the areas from
+which the weights are computed:
+
+```{r}
+#| label: we-intersect
+#| eval: true
+
+# The drive-time areas and ACS data described at the top of this article
+iso <- readRDS(system.file(
+  "extdata", "legacy_2025_isochrones.rds", package = "catchmentACS"
+))
+acs <- readRDS(system.file(
+  "extdata", "sample_alabama_subset.rds", package = "catchmentACS"
+))
+
+site_id    <- "AL_SITE_19"
+drive_time <- 10L
+
+iso_one <- iso[
+  iso$site_id == site_id & iso$drive_time_min == drive_time, ,
+  drop = FALSE
+]
+
+weighted <- cacs_intersect_weight(
+  iso_sf           = iso_one,
+  acs_sf           = acs,
+  weight_method    = "area",
+  keep_tract_audit = TRUE,
+  verbose          = FALSE
+)
+```
+
+A coverage weight divides `int_area_m2`, the area of the part of a tract inside
+the drive-time area, by `tract_area_m2`, the area of the tract. An area share
+divides `int_area_m2` by its total over the tracts. The code below computes
+both from the `cacs_tract_audit` attribute of the result:
+
+```{r}
+#| label: we-weights
+#| eval: true
+
+tracts <- attr(weighted, "cacs_tract_audit") |>
+  transmute(
+    GEOID,
+    int_area_m2,
+    tract_area_m2,
+    w_cov  = int_area_m2 / tract_area_m2,            # coverage weight
+    w_mean = int_area_m2 / sum(int_area_m2)          # area share
+  ) |>
+  arrange(desc(int_area_m2))
+
+tracts
+```
+
+The tract that contains the site lies wholly inside the drive-time area and has
+`r round(100 * tracts$w_mean[1])` percent of the overlap area. About
+`r round(100 * tracts$w_cov[2])` percent of each of the other two tracts lies
+inside.
+
+The package's rows for the two variables show the kind of each estimate and the
+weights used:
+
+```{r}
+#| label: we-total
+#| eval: true
+
+two_rows <- weighted |>
+  filter(variable %in% c("B17001_002", "B19301_001")) |>
+  select(variable, estimate, moe, weight_sum, estimand_family, weight_basis)
+
+two_rows
+```
+
+The count uses the coverage weights. Its estimate, about
+`r format(round(two_rows$estimate[two_rows$variable == "B17001_002"]), big.mark = ",")`
+people, is the count of the tract that contains the site plus about
+`r round(100 * tracts$w_cov[2])` percent of the count of each of the other two
+tracts. On both rows, `weight_sum` is the sum of the coverage weights computed
+above, although per capita income is averaged with the area shares.
+
+All three tracts have a row for per capita income in the ACS data, so the area
+shares computed above are the ones that the package uses for it. The code
+below applies both kinds of weights to the three tract values:
+
+```{r}
+#| label: we-per-capita
+#| eval: true
+
+pc_income <- acs |>
+  sf::st_drop_geometry() |>
+  filter(GEOID %in% tracts$GEOID, variable == "B19301_001") |>
+  select(GEOID, X = estimate)
+
+demo <- tracts |>
+  select(GEOID, w_cov, w_mean) |>
+  left_join(pc_income, by = "GEOID")
+
+demo
+
+pc_sum <- sum(demo$w_cov  * demo$X)   # coverage weights, as for a count
+pc_avg <- sum(demo$w_mean * demo$X)   # area shares, as the package does
+
+c(coverage_weighted_sum = pc_sum, area_share_average = pc_avg)
+```
+
+The average weighted by area shares, `r format(round(pc_avg), big.mark = ",")`
+dollars, is the estimate that the package reports for `B19301_001` above. It
+lies between the smallest and the largest tract values,
+`r format(min(demo$X), big.mark = ",")` and
+`r format(max(demo$X), big.mark = ",")` dollars.
+`vignette("theory-spatial-aggregation", package = "catchmentACS")` shows with
+two tracts how far this average can be from the per capita income of the
+people in the drive-time area.
+
+The same tract values weighted by coverage weights add up to
+`r format(round(pc_sum), big.mark = ",")` dollars, more than the per capita
+income of any of the three tracts. This sum is not a per capita income: it
+grows with the number of tracts in the drive-time area and with the part of
+each that lies inside.
+
+Each of the two rows also has a margin of error, computed with the same weights
+as its estimate; the next section gives the formulas.
+
+## Margins of error
+
+The margins of error of counts, medians, and per-person values come from
+`cacs_intersect_weight()` at the 90 percent level and from
+`cacs_propagate_moe()` at the chosen level, and those of the rates from
+`cacs_derive_rates()`. Each margin of error is computed from the published
+tract margins of error $M_j$ and the weights of the estimate, with the weights
+treated as fixed numbers. A count is a sum of weighted tract estimates, and its
+margin of error comes from the formula that the Census Bureau's handbook for
+ACS data users gives for a sum [@census2020understanding, chap. 8]:
+
+$$
+M(\widehat{Y}_s) = z \sqrt{\sum_j \left(\frac{w^{cov}_{sj}\, M_j}{1.645}\right)^2}.
+$$
+
+With the default level of 90 percent ($z = 1.645$), this reduces to
+$\sqrt{\sum_j (w^{cov}_{sj} M_j)^2}$. A median or a per-person value gets the
+same expression with the area shares $w^{mean}_{sj}$ in place of the coverage
+weights. For these values the margin of error is that of an area-weighted
+average of tract values, an approximation that the package makes and the
+handbook does not give.
+
+For a rate $\widehat{R}_s = \widehat{A}_s / \widehat{B}_s$, the handbook
+distinguishes a proportion, whose numerator is part of its denominator, from
+other ratios and gives a formula for each. In terms of the margins of error of
+the two counts,
+
+$$
+M(\widehat{R}_s) = \frac{\sqrt{M(\widehat{A}_s)^2 \mp \widehat{R}_s^2\, M(\widehat{B}_s)^2}}{\widehat{B}_s},
+$$
+
+where the minus sign gives the proportion formula and the plus sign the ratio
+formula. The column `moe_formula_effective` records the formula used in each
+row: `"weighted_sum"` for counts, `"weighted_mean"` for medians and per-person
+values, and `"proportion_subset"` or `"general_ratio_conservative"` for rates.
+
+All five rates are proportions: the numerator of each is part of its
+denominator. For a proportion, the handbook uses the ratio formula only in
+place of a proportion formula that fails (see below). Unless the argument
+`formula_dispatch` is changed, `cacs_derive_rates()` and `cacs_run()`
+nevertheless give all five rates the ratio formula, whose margin of error is
+never the narrower of the two.
+`vignette("theory-derived-rates", package = "catchmentACS")` lists the formula
+of every rate for each value of `formula_dispatch` and gives the reason
+recorded for `unemp_rate`.
+
+The proportion formula fails when the value under its square root is negative.
+The package then computes that row with the ratio formula, as the handbook
+advises for this case, and records the substitution in the row.
+`vignette("theory-moe-propagation", package = "catchmentACS")` describes the
+columns that record it and how zero denominators and missing values are
+handled.
+
+## Limitations
+
+Counts and rates rest on the assumption, stated with the notation above, that
+whatever a variable counts is spread evenly over each tract's area.
+@comber2019spatial [p. 8] describe area weighting as the best-known method for
+transferring counts between two sets of areas. They note that its assumption
+rarely holds, but that the method is reasonable when no other data on where
+people live are available. That method moves counts, and the averages this
+package forms for medians and per-person values are its own. They weight each
+tract by the area it shares with the drive-time area and ignore how many people
+live in it. They therefore match the drive-time area's own per-person value
+only when the overlapping tracts hold the same number of residents per unit
+area. For a
+median, not even that is enough, because the median of a combined distribution
+is not an average of the tract medians.
+`vignette("theory-spatial-aggregation", package = "catchmentACS")` works
+through an example. The package has no population weighting yet:
+`weight_method = "population"` gives an error.
+
+All the margins of error treat the estimates of different tracts as
+independent. The handbook's approximation formulas leave out the covariance
+between estimates, so they can overstate or understate a margin of error
+[@census2020understanding, chap. 8]. They also depart further from the standard
+error computed from the ACS microdata as more estimates are combined. If the tract
+estimates in a drive-time area are positively correlated, the reported margins
+of error of counts, medians, and per-person values are too small. The margins
+of error also leave out error from area weighting and uncertainty in the
+drive-time areas. catchmentACS does not use the Census Bureau's variance
+replicate tables, which reflect this covariance
+[@census2020understanding, chap. 8] and performed best among the three
+approaches compared by @folch2023covariance.
+`vignette("theory-moe-propagation", package = "catchmentACS")` discusses each
+assumption and what it means for rates.
+
+The margins of error describe each site and drive time separately. Each
+drive-time area of a site contains its areas for shorter drive times, and the
+areas of nearby sites can overlap the same tracts, so their estimates are
+computed in part from the same tract estimates and are not independent. The
+package does not compute the covariance between them. A comparison that treats
+two such estimates as independent, such as the Census Bureau's test for
+comparing two estimates [@census2020understanding, chap. 7], leaves this
+covariance out. For two counts, the shared tracts make the estimates positively
+correlated, so the test finds fewer differences than it should. For two rates,
+the sign of the correlation also depends on how the errors of the numerator and
+the denominator in each shared tract are related.
+
+`cacs_derive_rates()` computes the five rates in `cacs_acs_default_rates` and
+gives an error for any other list of rates. A ratio of two other counts can be
+formed from the weighted counts and their margins of error in the result, with
+the formulas above, as
+`vignette("theory-derived-rates", package = "catchmentACS")` describes.
+
+Data from outside a box drawn around the contiguous United States and the
+District of Columbia, such as data for Alaska, Hawaii, or Puerto Rico, stop
+`cacs_intersect_weight()` with an error.
+`vignette("theory-spatial-aggregation", package = "catchmentACS")` describes
+the projection on which the areas are measured. When the ACS data are the
+tracts of one state, as `cacs_acs_prefetch()` downloads them, the part of a
+drive-time area that extends into another state adds nothing to the estimates.
+
+## References
+
+```{r}
+#| label: restore-options
+#| include: false
+
+options(old_options)
+rm(old_options)
+```
+
+```{=html}
+<script>
+// Chrome can leave out a hat that sits over a bar, such as the hat of the
+// estimated average in the formulas above. Written as a spacing character,
+// the hat is always drawn.
+document.querySelectorAll("math mover > mover + mo").forEach(function (mo) {
+  if (mo.textContent === "\u0302") {
+    mo.textContent = "\u02C6";
+  }
+});
+</script>
+```

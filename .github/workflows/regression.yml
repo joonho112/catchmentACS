@@ -1,0 +1,48 @@
+# Workflow: regression
+#
+# Runs the Alabama regression test, which compares a run of the package with
+# the 1,080-row output saved in inst/extdata, on three occasions:
+#   - a push to main or master;
+#   - a nightly run at 04:00 UTC;
+#   - a run started by hand from the Actions tab.
+#
+# `CACS_REGRESSION: true` is what skip_if_not_regression() in
+# tests/testthat/helper-skip.R looks for. Without it the regression test is
+# skipped, which keeps pull requests short.
+
+on:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+name: regression
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    name: frozen-alabama-2025
+    env:
+      CACS_REGRESSION: true
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      _R_CHECK_FORCE_SUGGESTS_: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::devtools
+            any::testthat
+
+      - name: Run frozen Alabama regression suite
+        run: Rscript -e 'devtools::test(filter = "regression-2025-alabama")'

@@ -1,0 +1,72 @@
+Package: catchmentACS
+Title: Isochrone-Based Area-Weighted ACS Aggregation
+Version: 0.5.1
+Authors@R:
+    person("JoonHo", "Lee", , "jlee296@ua.edu", role = c("aut", "cre", "cph"),
+           comment = c(ORCID = "0009-0006-4019-8703"))
+Description: Computes American Community Survey (ACS) estimates for the
+    area within a given drive time of each of a set of points, such as the
+    locations of pre-kindergarten classrooms. Such an area is called an
+    isochrone. The drive-time areas come from a routing service, either the
+    'Open Source Routing Machine' ('OSRM') or 'openrouteservice', and the
+    ACS 5-year estimates of census tracts come from the Census Bureau
+    through the 'tidycensus' package, one state at a time. The tracts that
+    overlap an area are combined by area weighting, which uses two weights:
+    the share of each tract's area that lies inside, for counts and rates,
+    and each tract's share of the overlapping area, for the medians and
+    per-person values of three ACS tables (median household income, median
+    home value, and per capita income). A median or per-person value from
+    any other table is added up like a count. Counts, medians, per-person
+    values, and five rates are returned with a margin of error at a chosen
+    confidence level, 90 percent by default, and with a record of the
+    settings, inputs, and package versions behind the run. The five rates
+    are the poverty rate, the shares of households receiving Supplemental
+    Nutrition Assistance Program (SNAP) benefits and Supplemental Security
+    Income, the unemployment rate, and the labor force participation rate.
+    The margins of error of counts and rates use the approximation formulas
+    in chapter 8 of U.S. Census Bureau (2020) "Understanding and Using
+    American Community Survey Data: What All Data Users Need to Know"
+    <https://www.census.gov/programs-surveys/acs/library/handbooks/general.html>.
+    For a count the formula for a sum is applied to the weighted tract
+    estimates, with the weights treated as fixed. For a rate the default is
+    the formula for a ratio. Its margin of error is at least as wide as that
+    of the formula for a proportion, which the handbook gives for ratios
+    whose numerator is part of the denominator, as it is in all five rates.
+    The margins of error of medians and per-person values are an
+    approximation made by the package.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Language: en-US
+LazyData: true
+Depends:
+    R (>= 4.1.0)
+Imports:
+    cli,
+    digest,
+    dplyr,
+    httr2,
+    jsonlite,
+    rlang,
+    sf (>= 1.0-12),
+    tibble,
+    tidycensus (>= 1.6),
+    tidyr,
+    tigris
+Suggests:
+    classInt,
+    htmltools,
+    knitr,
+    leaflet,
+    openrouteservice,
+    osrm (>= 4.0),
+    rmarkdown,
+    testthat (>= 3.0.0),
+    withr
+VignetteBuilder: knitr
+Config/Needs/coverage: covr
+Config/Needs/website: pkgdown
+Config/testthat/edition: 3
+URL: https://github.com/joonho112/catchmentACS, https://joonho112.github.io/catchmentACS/
+BugReports: https://github.com/joonho112/catchmentACS/issues
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.0

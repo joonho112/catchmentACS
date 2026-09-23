@@ -1,0 +1,19 @@
+Routing values in legacy_2025_isochrones.rds
+
+The 60 drive-time areas in legacy_2025_isochrones.rds are made up. They are
+circles, not routes: data-raw/regression_al_prek_2025.R projects each of the
+20 made-up sites to EPSG:5070, buffers it by 1 km for each minute of drive
+time (5, 10, and 15 minutes), and projects the circle back to EPSG:4326. No
+routing server was contacted.
+
+The script writes the routing columns of that file as fixed values:
+
+  provider                 osrm
+  profile                  car
+  routing_engine_version   OSRM 5.27.1
+  osm_snapshot_date        2025-04-01
+  osm_snapshot_status      explicit
+  generated_at             2025-04-15 12:00:00 UTC
+
+They describe no routing run. The same date is the osm_snapshot field of the
+provenance attribute of legacy_2025_golden_output.rds.

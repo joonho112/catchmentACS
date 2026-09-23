@@ -1,0 +1,73 @@
+# Workflow: pkgdown
+#
+# Builds the package website and deploys it to the gh-pages branch on a push to
+# main or master, on a published release, and when started by hand. It follows
+# the r-lib/actions pkgdown example and the steps of R-CMD-check.yaml, with one
+# addition: the step "Fix favicon MIME type" rewrites the favicon link that
+# pkgdown 2.2.0 writes with curly quotes around the type attribute, which
+# browsers do not read. Every build writes it again, so the step runs after the
+# build and before the deploy, and fails the job if a curly-quoted one is left.
+# It can go once pkgdown writes straight quotes.
+#
+# This is the only pkgdown workflow of the repository.
+# usethis::use_pkgdown_github_pages() would add a second one without the
+# favicon step. To make the gh-pages branch and point GitHub Pages at it, run
+# usethis::use_github_pages() once, or set Settings -> Pages (Source: Deploy
+# from a branch -> gh-pages / root) by hand after the first run.
+
+on:
+  push:
+    branches: [main, master]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+name: pkgdown
+
+permissions:
+  contents: write
+
+jobs:
+  pkgdown:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pkgdown-${{ github.event_name }}
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      _R_CHECK_FORCE_SUGGESTS_: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::pkgdown, local::.
+          needs: website
+
+      - name: Build site
+        run: pkgdown::build_site_github_pages(new_process = FALSE, install = FALSE)
+        shell: Rscript {0}
+
+      # pkgdown 2.2.0 favicon MIME defect (see header). Rewrite curly quotes to
+      # straight quotes across all generated HTML, then fail if any survive.
+      - name: Fix favicon MIME type (pkgdown 2.2.0 smart-quote bug)
+        run: |
+          find docs -name "*.html" -exec perl -CSD -i -pe 's/\x{201d}image\/svg\+xml\x{201d}/image\/svg+xml/g' {} +
+          if grep -rlP '\x{201d}image/svg\+xml\x{201d}' docs --include="*.html"; then
+            echo "::error::curly-quote favicon type still present after patch"; exit 1
+          fi
+        shell: bash
+
+      - name: Deploy to GitHub pages
+        if: github.event_name != 'pull_request'
+        uses: JamesIves/github-pages-deploy-action@v4.5.0
+        with:
+          clean: false
+          branch: gh-pages
+          folder: docs
