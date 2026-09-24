@@ -291,3 +291,53 @@ test_that("C03-CACHE-05 ACS replay honors current verbose and drop-water flags",
     })
   })
 })
+
+
+test_that("C03-CACHE-06 a saved condition whose call has a source reference is read back", {
+  with_test_cache({
+    key <- cache_key_for("acs")
+    value <- cache_acs_tbl(5)
+    cond <- .c03_capture_water_condition("01003990000")
+
+    # With the package installed with its sources kept, the call of a
+    # condition has a "srcref" attribute whose source file record holds
+    # promises that were already evaluated. R reads such a promise back with
+    # another environment, so a value that holds one changes when it is
+    # written and read back.
+    srcfile <- new.env(parent = emptyenv())
+    delayedAssign("lines", "f(x)", assign.env = srcfile)
+    force(srcfile$lines)
+    class(srcfile) <- c("srcfilecopy", "srcfile")
+    call <- quote(f(x))
+    attr(call, "srcref") <- structure(
+      c(1L, 1L, 1L, 4L, 1L, 4L, 1L, 1L),
+      srcfile = srcfile, class = "srcref"
+    )
+    cond[["call"]] <- call
+    if (identical(digest::digest(cond),
+                  digest::digest(unserialize(serialize(cond, NULL))))) {
+      skip("This version of R reads such a value back unchanged.")
+    }
+
+    expect_true(.cacs_cache_put(value, key, "acs", conditions = list(cond)))
+
+    replay <- NULL
+    cache_messages <- character()
+    got <- withCallingHandlers(
+      .cacs_cache_get(key, "acs"),
+      catchmentACS_message_water_tract_filter = function(m) {
+        replay <<- m
+        invokeRestart("muffleMessage")
+      },
+      catchmentACS_message_cache = function(m) {
+        cache_messages <<- c(cache_messages, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    )
+
+    expect_identical(got, value, info = paste(cache_messages, collapse = "\n"))
+    expect_s3_class(replay, "catchmentACS_message_water_tract_filter")
+    # The call is kept, without its "srcref" attribute.
+    expect_identical(replay[["call"]], quote(f(x)))
+  })
+})

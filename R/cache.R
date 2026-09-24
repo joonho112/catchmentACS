@@ -123,6 +123,13 @@
 # Messages and warnings can be saved with a result, in the attribute named by
 # .CACS_CACHE_CONDITIONS_ATTR, and given again when the result is read back, so
 # that a saved run says the same things as the run that produced it.
+#
+# A condition keeps the call that raised it. When the package is installed
+# with its sources kept (R_KEEP_PKG_SOURCE=yes), that call has a "srcref"
+# attribute, which holds environments of the installed package. Such a value
+# is not the same after it is written and read back, so the saved file would
+# never match its fingerprint file and each call would compute the result
+# again. The attribute is dropped; giving the condition again does not use it.
 
 .cacs_cache_prepare_conditions <- function(conditions) {
   if (is.null(conditions)) return(list())
@@ -130,7 +137,15 @@
     conditions <- list(conditions)
   }
   if (!is.list(conditions)) return(list())
-  Filter(function(cnd) inherits(cnd, "condition"), conditions)
+  conditions <- Filter(function(cnd) inherits(cnd, "condition"), conditions)
+  lapply(conditions, function(cnd) {
+    call <- cnd[["call"]]
+    if (!is.null(attr(call, "srcref", exact = TRUE))) {
+      attr(call, "srcref") <- NULL
+      cnd[["call"]] <- call
+    }
+    cnd
+  })
 }
 
 .cacs_cache_conditions <- function(value) {
@@ -909,9 +924,17 @@ cacs_cache_status <- function() {
   as.numeric(days)
 }
 
+# On Windows, tempdir() and tempfile() separate folders with a backslash, and
+# normalizePath() keeps the short form of a folder name (such as RUNNER~1) in
+# a path that does not exist yet, so the paths are compared with forward
+# slashes, both as given and normalized.
+
 .cacs_cache_in_tempdir <- function(path) {
-  tmp <- unique(c(tempdir(), normalizePath(tempdir(), winslash = "/", mustWork = FALSE)))
-  candidates <- unique(c(path, normalizePath(path, winslash = "/", mustWork = FALSE)))
+  slashes <- function(x) {
+    if (.Platform$OS.type == "windows") gsub("\\", "/", x, fixed = TRUE) else x
+  }
+  tmp <- unique(slashes(c(tempdir(), normalizePath(tempdir(), winslash = "/", mustWork = FALSE))))
+  candidates <- unique(slashes(c(path, normalizePath(path, winslash = "/", mustWork = FALSE))))
   any(vapply(candidates, function(p) {
     any(p == tmp | startsWith(p, paste0(tmp, "/")))
   }, logical(1)))

@@ -203,6 +203,10 @@ test_that("PRUNE-08 .cacs_cache_in_tempdir() tells the session's temporary folde
   expect_true(.cacs_cache_in_tempdir(
     file.path(normalizePath(tempdir(), winslash = "/"), "not-created", "cache")
   ))
+  # tempfile() writes the path as R does on the platform: on Windows, with
+  # backslashes, and here for a folder that does not exist.
+  expect_true(.cacs_cache_in_tempdir(tempfile("not_created_")))
+  expect_true(.cacs_cache_in_tempdir(file.path(tempfile("not_created_"), "cache")))
   expect_false(.cacs_cache_in_tempdir(paste0(tempdir(), "x")))
   expect_false(.cacs_cache_in_tempdir(dirname(tempdir())))
   expect_false(.cacs_cache_in_tempdir(tools::R_user_dir("catchmentACS", "cache")))
