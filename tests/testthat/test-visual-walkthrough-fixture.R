@@ -67,7 +67,11 @@ test_that("visual walkthrough proxy rows match a current offline rerun", {
 
   expect_equal(stored_proxy[, c("site_id", "drive_time_min", "variable")],
                fresh_proxy[, c("site_id", "drive_time_min", "variable")])
-  expect_equal(stored_proxy$estimate, fresh_proxy$estimate, tolerance = 1e-8)
-  expect_equal(stored_proxy$moe, fresh_proxy$moe, tolerance = 1e-8)
+  # Exact where PROJ does not shift WGS 84 against NAD83, as when the result
+  # was stored; 0.1 percent elsewhere (see helper-datum.R).
+  expect_equal(stored_proxy$estimate, fresh_proxy$estimate,
+               tolerance = stored_value_tolerance())
+  expect_equal(stored_proxy$moe, fresh_proxy$moe,
+               tolerance = stored_value_tolerance())
   expect_gt(min(stored_proxy$estimate, na.rm = TRUE), 10000)
 })

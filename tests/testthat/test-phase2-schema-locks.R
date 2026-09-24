@@ -271,7 +271,10 @@ test_that("T-P2-GOLDEN-05 common weighted values match v0.2", {
   ref <- .p2_ordered(.p2_fixture032()$weighted_seam_v2)
   common <- c("estimate", "moe", "weight_sum", "n_tracts",
               "n_tracts_num", "n_tracts_den")
-  expect_equal(out[common], ref[common], tolerance = 1e-8, ignore_attr = TRUE)
+  # Exact where PROJ does not shift WGS 84 against NAD83, as when the values
+  # were stored; 0.1 percent elsewhere (see helper-datum.R).
+  expect_equal(out[common], ref[common], tolerance = stored_value_tolerance(),
+               ignore_attr = TRUE)
 })
 
 test_that("T-P2-GOLDEN-06 provenance and formula columns match v0.2", {

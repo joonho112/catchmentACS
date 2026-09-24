@@ -128,7 +128,11 @@
 #'    the tracts (see below).
 #' 2. Transforms both inputs to EPSG:5070 (NAD83 / Conus Albers), an
 #'    equal-area projection, and measures all areas there, in square meters.
-#'    Invalid geometries are repaired, with a warning.
+#'    Invalid geometries are repaired, with a warning. For `iso_sf`, the
+#'    change from WGS 84 to NAD83 is the one that PROJ chooses. Without
+#'    datum grid files, PROJ treats the two as the same; with them, it can
+#'    move the areas by a meter or two. Results can therefore differ between
+#'    computers in the fourth or fifth significant digit.
 #' 3. Skips, with a warning, the tracts whose area is zero or not finite,
 #'    such as a water tract with an empty boundary, and stops with an error
 #'    if every tract is like that. The skipped tracts are listed in the
