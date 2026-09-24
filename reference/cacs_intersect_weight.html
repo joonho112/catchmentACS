@@ -252,7 +252,11 @@ when the bounding box of the drive-time areas extends beyond that of
 the tracts (see below).</p></li>
 <li><p>Transforms both inputs to EPSG:5070 (NAD83 / Conus Albers), an
 equal-area projection, and measures all areas there, in square meters.
-Invalid geometries are repaired, with a warning.</p></li>
+Invalid geometries are repaired, with a warning. For <code>iso_sf</code>, the
+change from WGS 84 to NAD83 is the one that PROJ chooses. Without
+datum grid files, PROJ treats the two as the same; with them, it can
+move the areas by a meter or two. Results can therefore differ between
+computers in the fourth or fifth significant digit.</p></li>
 <li><p>Skips, with a warning, the tracts whose area is zero or not finite,
 such as a water tract with an empty boundary, and stops with an error
 if every tract is like that. The skipped tracts are listed in the
