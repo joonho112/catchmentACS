@@ -125,6 +125,9 @@ jobs:
       # testthat and knitr available. A package of Suggests that one of these
       # needs is installed with it, as classInt is with sf and htmltools with
       # rmarkdown; leaflet, openrouteservice and osrm are not installed.
+      # The job keeps a package cache of its own (`cache-version`): with the
+      # default, it can restore the packages saved by a job that installs
+      # Suggests, and would then run with them.
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           dependencies: '"hard"'
@@ -134,6 +137,7 @@ jobs:
             any::knitr
             any::rmarkdown
           needs: check
+          cache-version: no-suggests-1
 
       - uses: r-lib/actions/check-r-package@v2
         with:
