@@ -5,6 +5,11 @@ This is a new submission.
 ## Test environments
 
 * local: macOS 26.6.2 (aarch64), R 4.6.0
+* win-builder: R-devel (2026-09-21 r90579 ucrt) and R 4.6.1
+* mac builder: macOS 26.6 (arm64), R 4.6.1 Patched
+* R-hub, R-devel: Ubuntu 24.04 (linux), Ubuntu 22.04 (donttest), Windows
+  (windows), and Fedora 42 with only the packages in Depends, Imports, and
+  VignetteBuilder, and testthat for the tests (nosuggests)
 * GitHub Actions:
   * ubuntu-latest: R 4.6.1 and R-devel
   * windows-latest: R 4.6.1
@@ -19,18 +24,18 @@ This is a new submission.
 
 * This is a new submission.
 
-On the local machine only, a second note says that its HTML Tidy is too old to
-validate the HTML help pages.
+On win-builder, the note also lists words in DESCRIPTION as possibly
+misspelled. These are correct: ACS (American Community Survey, written out in
+the Description), isochrone and Isochrone (the area reachable within a given
+drive time, defined in the Description), and pre (from "pre-kindergarten").
 
-The note may also list words in DESCRIPTION as possibly misspelled. These are
-correct: ACS (American Community Survey, written out in the Description),
-isochrone and Isochrone (the area reachable within a given drive time, defined
-in the Description), and pre (from "pre-kindergarten").
+On the local machine only, a second note says that its HTML Tidy is too old to
+validate the HTML help pages. The HTML manual passes on win-builder.
 
 ## Examples
 
-The examples that download data from the Census Bureau, which needs an API
-key, are wrapped in `\dontrun{}` (six help pages). So are the examples in
+The examples in six help pages download data from the Census Bureau, for which
+an API key is needed; they are wrapped in `\dontrun{}`. So are the examples in
 `?cacs_isochrone` and `?cacs_validate_osrm_endpoint` that send requests to the
 public OSRM demo server: they need no key, but the server is a shared service
 that limits the requests it accepts, and the example in `?cacs_isochrone`
