@@ -27,7 +27,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">catchmentACS</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.6.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -85,7 +85,7 @@
     
     
 <p>Scripts written for catchmentACS 0.1 or 0.2 can stop with an error
-under version 0.5.1, or run and give different results.
+under version 0.6.0, or run and give different results.
 <code><a href="../articles/porting-v03-to-v04.html">vignette("porting-v03-to-v04", package = "catchmentACS")</a></code>
 and
 <code><a href="../articles/porting-v04-to-v05.html">vignette("porting-v04-to-v05", package = "catchmentACS")</a></code>
@@ -412,7 +412,7 @@ inputs. With the areas and the ACS estimates supplied,
 <span>  weight_args <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>keep_tract_audit <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span>,</span>
 <span>  verbose <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
-<pre><code><span><span class="co">#&gt; Warning in .warn_derive_rates_summary(out, names(rates)): Some rates are `NA` or use a replacement formula:</span></span>
+<pre><code><span><span class="co">#&gt; Warning: Some rates are `NA` or use a replacement formula:</span></span>
 <span><span class="co">#&gt; <span style="color: #00BBBB;">•</span> `failure_origin = "carrier"`: 3 rate rows, `NA` because a count or margin of</span></span>
 <span><span class="co">#&gt;   error that the rate needs is missing.</span></span>
 <span><span class="co">#&gt; <span style="color: #00BBBB;">ℹ</span> The <span style="color: #00BB00;">failure_origin</span> and <span style="color: #00BB00;">moe_fallback_reason</span> columns give the reason on each</span></span>
@@ -527,7 +527,7 @@ areas with tract boundaries to list the tracts:</p>
 OSRM grid resolution <code>res</code>: the osrm package draws each area
 from travel times to a grid of <code>res</code> by <code>res</code>
 points around the site. Without <code>res</code>, version 0.2 used 50;
-version 0.5.1 uses <code>30L</code> with
+version 0.6.0 uses <code>30L</code> with
 <code>osrm_mode = "demo"</code>, the default, and <code>70L</code> with
 <code>osrm_mode = "docker"</code>. Version 0.2 dropped <code>res</code>
 from <code>iso_args</code> with a warning, so a script that gave it

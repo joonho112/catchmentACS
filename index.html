@@ -32,7 +32,7 @@
 
     <a class="navbar-brand me-2" href="index.html">catchmentACS</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.6.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -141,12 +141,12 @@
 <p>For a run on your own sites, the call is the same without <code>precomputed_isochrones =</code> and <code>acs =</code>. The sites go in as a data frame with the columns <code>site_id</code>, <code>lon</code>, and <code>lat</code>, or as an sf object of points with a <code>site_id</code> column. The run then needs a routing service, a Census API key, and an internet connection. <a href="https://joonho112.github.io/catchmentACS/articles/getting-started.html">Getting started with catchmentACS</a> goes through the result column by column, and <a href="https://joonho112.github.io/catchmentACS/articles/providers.html">Routing services, API keys, and offline use</a> covers the routing services and their keys.</p>
 </div>
 <div class="section level2">
-<h2 id="what-version-051-does">What version 0.5.1 does<a class="anchor" aria-label="anchor" href="#what-version-051-does"></a>
+<h2 id="what-version-060-does">What version 0.6.0 does<a class="anchor" aria-label="anchor" href="#what-version-060-does"></a>
 </h2>
 <ul>
 <li>Area weighting of the tracts that overlap each drive-time area. It is the only weighting method in this version.</li>
 <li>ACS 5-year estimates for one state at a time, with end years from 2009 through 2024. The state has to be in the contiguous United States or the District of Columbia; sites or tracts outside that give an error.</li>
-<li>Drive-time areas from the Open Source Routing Machine (OSRM) or from openrouteservice, which needs an API key: the <code>ORS_API_KEY</code> environment variable, <code>ors_api_key =</code> in <code><a href="reference/cacs_isochrone.html">cacs_isochrone()</a></code>, or <code>iso_args = list(ors_api_key = ...)</code> in <code><a href="reference/cacs_run.html">cacs_run()</a></code>.</li>
+<li>Drive-time areas from the Open Source Routing Machine (OSRM) or from openrouteservice, which needs an API key: the <code>ORS_API_KEY</code> environment variable, <code>ors_api_key =</code> in <code><a href="reference/cacs_isochrone.html">cacs_isochrone()</a></code>, or <code>iso_args = list(ors_api_key = ...)</code> in <code><a href="reference/cacs_run.html">cacs_run()</a></code>. The openrouteservice route has been checked only with simulated responses from openrouteservice.</li>
 <li>Five rates, each with a margin of error at the 90 percent level: the poverty rate, the share of households receiving SNAP benefits, the share of households with Supplemental Security Income, the unemployment rate, and labor force participation.</li>
 <li>A cache for the downloaded estimates, the drive-time areas, and the weighted results, kept for the R session or in a folder you choose; checks on ACS data and drive-time areas from other sources; summaries of a result; and leaflet maps of one site’s areas, tracts, estimates, and rates.</li>
 </ul>

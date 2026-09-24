@@ -15,7 +15,7 @@ minutes, so the 10-minute area includes the 5-minute area."><meta property="og:i
 
     <a class="navbar-brand me-2" href="../index.html">catchmentACS</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.6.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -243,6 +243,11 @@ reached (HTTP status 429), the function stops with an error as soon as
 that answer comes, sends no requests for the remaining sites, and returns
 no result. It does the same when the service refuses access (HTTP status
 401 or 403), for example because an API key is not accepted.</p>
+<p>The requests have no time limit of their own: a server that accepts the
+connection but does not answer makes the function wait, and a server that
+cannot be reached is tried three times for each site before the site is
+reported as failed. <code><a href="cacs_validate_osrm_endpoint.html">cacs_validate_osrm_endpoint()</a></code> checks an OSRM server
+with a time limit and can be called first.</p>
 <p>Unless the cache is turned off with <code><a href="cacs_set_cache.html">cacs_set_cache()</a></code>, the result is
 saved in the cache folder (<code>cache_dir</code>, or <code><a href="cacs_cache_dir.html">cacs_cache_dir()</a></code>), which by
 default lasts only for the R session. A later call with the same arguments
@@ -268,9 +273,11 @@ needs no API key; <code>osrm_mode</code> chooses the server (see the OSRM sectio
 below). <code>provider = "ors"</code> uses openrouteservice through the
 openrouteservice package and needs an API key, given in <code>ors_api_key</code>; if
 the key is empty, the function stops with an error of class
-<code>catchmentACS_error_credential</code> before any request is sent. The two
-services compute the areas in different ways, so the area for the same
-site and drive time can differ between them.</p>
+<code>catchmentACS_error_credential</code> before any request is sent. The
+openrouteservice route has been checked only with simulated responses
+from openrouteservice, not with the service itself. The two services
+compute the areas in different ways, so the area for the same site and
+drive time can differ between them.</p>
     </div>
     <div class="section level2">
     <h2 id="osrm-servers">OSRM servers<a class="anchor" aria-label="anchor" href="#osrm-servers"></a></h2>

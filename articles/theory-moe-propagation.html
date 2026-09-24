@@ -27,7 +27,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">catchmentACS</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.6.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -493,7 +493,7 @@ for both rates, but in the 10-minute area of site
 <span><span class="op">)</span></span>
 <span><span class="va">rates_08</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/cacs_derive_rates.html">cacs_derive_rates</a></span><span class="op">(</span><span class="va">propagated_08</span>, formula_dispatch <span class="op">=</span> <span class="st">"auto"</span>,</span>
 <span>                              verbose <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span></code></pre></div>
-<pre><code><span><span class="co">#&gt; Warning in .warn_derive_rates_summary(out, names(rates)): Some rates are `NA` or use a replacement formula:</span></span>
+<pre><code><span><span class="co">#&gt; Warning in cacs_derive_rates(propagated_08, formula_dispatch = "auto", verbose = FALSE): Some rates are `NA` or use a replacement formula:</span></span>
 <span><span class="co">#&gt; <span style="color: #00BBBB;">•</span> `moe_fallback_reason = "negative_variance"`: 1 rate row used the ratio</span></span>
 <span><span class="co">#&gt;   formula (C2), because the proportion formula (C1) gave a negative variance.</span></span>
 <span><span class="co">#&gt; <span style="color: #00BBBB;">ℹ</span> The <span style="color: #00BB00;">failure_origin</span> and <span style="color: #00BB00;">moe_fallback_reason</span> columns give the reason on each</span></span>
