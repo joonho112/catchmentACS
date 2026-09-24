@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 692.8" width="600" height="692.8">
+  <defs>
+    <clipPath id="hexClip">
+      <polygon points="300,0 600,173.2 600,519.6 300,692.8 0,519.6 0,173.2"/>
+    </clipPath>
+    <radialGradient id="paperGlow" cx="50%" cy="44%" r="62%">
+      <stop offset="0%" stop-color="#FBF8F0"/>
+      <stop offset="100%" stop-color="#F2ECDC"/>
+    </radialGradient>
+    <radialGradient id="outerRing" cx="50%" cy="46%" r="60%">
+      <stop offset="0%" stop-color="#8AA793"/>
+      <stop offset="100%" stop-color="#6E8A78"/>
+    </radialGradient>
+    <radialGradient id="midRing" cx="50%" cy="46%" r="60%">
+      <stop offset="0%" stop-color="#EC9A52"/>
+      <stop offset="100%" stop-color="#D67E36"/>
+    </radialGradient>
+    <radialGradient id="innerRing" cx="50%" cy="44%" r="60%">
+      <stop offset="0%" stop-color="#D0533F"/>
+      <stop offset="100%" stop-color="#B83C2D"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Everything below is clipped to the hexagon -->
+  <g clip-path="url(#hexClip)">
+
+    <!-- 1. Paper background -->
+    <rect x="0" y="0" width="600" height="692.8" fill="url(#paperGlow)"/>
+
+    <!-- 2. Faint census-tract mesh: irregular tract-like hairlines -->
+    <g stroke="#1B3A4B" stroke-opacity="0.12" stroke-width="1.5" fill="none" stroke-linejoin="round">
+      <polyline points="-20,120 110,150 180,90 300,140 380,70 520,130 640,100"/>
+      <polyline points="-20,300 90,270 160,330 280,290 360,350 470,300 640,340"/>
+      <polyline points="-20,470 120,500 210,440 320,500 430,450 540,510 640,470"/>
+      <polyline points="-20,610 130,580 250,630 360,590 480,640 640,600"/>
+      <polyline points="80,-20 60,120 130,250 90,380 150,520 110,720"/>
+      <polyline points="240,-20 270,140 220,290 280,440 240,580 270,720"/>
+      <polyline points="400,-20 380,130 430,280 390,430 440,580 410,720"/>
+      <polyline points="540,-20 520,150 560,300 520,450 560,600 540,720"/>
+      <polyline points="110,150 90,270 160,330 220,290 270,140"/>
+      <polyline points="380,70 360,350 430,280 470,300 520,130"/>
+      <polyline points="160,330 210,440 320,500 280,290"/>
+      <polyline points="430,450 470,300 540,510 430,280"/>
+    </g>
+
+    <!-- 3a. Outer lobed ring (15-min) -->
+    <path fill="url(#outerRing)" fill-opacity="0.35" d="
+      M300,86
+      C360,80 416,104 458,142
+      C504,184 524,232 506,290
+      C498,330 524,360 512,402
+      C500,450 462,490 414,512
+      C378,528 352,512 312,514
+      C268,516 232,528 192,510
+      C140,486 104,444 92,392
+      C82,350 104,318 96,278
+      C86,228 110,178 156,142
+      C198,108 244,90 300,86 Z"/>
+
+    <!-- 3b. Middle lobed ring (10-min) -->
+    <path fill="url(#midRing)" fill-opacity="0.50" d="
+      M300,156
+      C344,150 386,170 414,200
+      C444,232 452,268 440,308
+      C432,338 450,360 440,392
+      C428,428 396,454 358,466
+      C330,474 314,462 286,464
+      C252,466 226,470 196,452
+      C162,432 142,398 140,360
+      C138,330 154,310 150,280
+      C144,242 162,206 196,182
+      C226,160 262,160 300,156 Z"/>
+
+    <!-- 3c. Inner lobed ring (5-min) -->
+    <path fill="url(#innerRing)" fill-opacity="0.72" d="
+      M300,214
+      C328,210 354,224 372,246
+      C392,268 396,292 386,316
+      C380,334 390,350 382,370
+      C372,392 350,406 324,410
+      C306,412 296,404 278,406
+      C254,408 234,402 218,386
+      C200,368 194,344 198,320
+      C200,302 212,290 210,272
+      C208,248 222,228 246,216
+      C264,208 282,214 300,214 Z"/>
+
+    <!-- 4. Center site marker: diamond with halo ring -->
+    <circle cx="300" cy="300" r="17" fill="none" stroke="#F7F3E9" stroke-width="2"/>
+    <rect x="300" y="287" width="18" height="18" fill="#1B3A4B"
+          transform="rotate(45 300 296)"/>
+
+    <!-- 5. Wordmark backing for contrast -->
+    <rect x="150" y="547" width="300" height="44" rx="9" fill="#F7F3E9" fill-opacity="0.72"/>
+    <text x="300" y="576" text-anchor="middle"
+          font-family="Archivo, 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif"
+          font-size="40" fill="#1B3A4B" letter-spacing="1">
+      <tspan font-weight="600">catchment</tspan><tspan font-weight="800">ACS</tspan>
+    </text>
+
+  </g>
+
+  <!-- Border drawn LAST, on top -->
+  <polygon points="300,0 600,173.2 600,519.6 300,692.8 0,519.6 0,173.2"
+           fill="none" stroke="#1B3A4B" stroke-width="16" stroke-linejoin="round"/>
+</svg>
