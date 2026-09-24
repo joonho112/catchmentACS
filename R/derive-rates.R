@@ -434,7 +434,18 @@ cacs_acs_default_rates <- .SANCTIONED_RATES_V1
     .cli_warn_runtime
   }
 
-  warn_fn(msg, phase = "rates")
+  # The warning names the call of cacs_derive_rates(), which called this
+  # function, when it was called by name, as in cacs_derive_rates(x). When
+  # cacs_run() calls it through do.call(), that call holds the function itself
+  # and would print its definition, so the warning then has no call. The
+  # caller's environment is passed, not the call: .cacs_emit() gives its
+  # arguments to do.call(), which would evaluate a call object.
+  caller <- rlang::caller_env()
+  caller_call <- sys.call(-1L)
+  fn <- if (is.call(caller_call)) caller_call[[1L]] else NULL
+  by_name <- is.symbol(fn) ||
+    (is.call(fn) && identical(fn[[1L]], as.name("::")))
+  warn_fn(msg, phase = "rates", call = if (by_name) caller else NULL)
 }
 
 

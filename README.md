@@ -153,7 +153,8 @@ covers the routing services and their keys.
 - Drive-time areas from the Open Source Routing Machine (OSRM) or from
   openrouteservice, which needs an API key: the `ORS_API_KEY` environment
   variable, `ors_api_key =` in `cacs_isochrone()`, or
-  `iso_args = list(ors_api_key = ...)` in `cacs_run()`.
+  `iso_args = list(ors_api_key = ...)` in `cacs_run()`. The openrouteservice
+  route has been checked only with simulated responses from openrouteservice.
 - Five rates, each with a margin of error at the 90 percent level: the poverty
   rate, the share of households receiving SNAP benefits, the share of households
   with Supplemental Security Income, the unemployment rate, and labor force

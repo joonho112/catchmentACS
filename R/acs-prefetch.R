@@ -394,11 +394,12 @@ cacs_acs_prefetch <- function(state,
   codebook_error <- NULL
   codebook <- tryCatch(
     tidycensus::load_variables(year, survey),
-    error = function(e) {
-      codebook_error <<- e
-      NULL
-    }
+    error = function(e) e
   )
+  if (inherits(codebook, "error")) {
+    codebook_error <- codebook
+    codebook <- NULL
+  }
 
   if (!is.null(codebook_error) &&
       isTRUE(.is_tidycensus_endpoint_not_found(codebook_error))) {
@@ -539,7 +540,10 @@ cacs_acs_prefetch <- function(state,
   # `n_total_rows`, and the counts of missing values describe the rows that
   # are returned.
 
-  cached_conditions <- list()
+  # The handler adds each message to an environment, which it can change in
+  # place, and the list is read from there afterwards.
+  seen <- new.env(parent = emptyenv())
+  seen$conditions <- list()
   drop_result <- withCallingHandlers(
     .drop_water_tracts(
       acs_sf            = out,
@@ -547,9 +551,10 @@ cacs_acs_prefetch <- function(state,
       verbose           = verbose
     ),
     catchmentACS_message_water_tract_filter = function(cnd) {
-      cached_conditions[[length(cached_conditions) + 1L]] <<- cnd
+      seen$conditions[[length(seen$conditions) + 1L]] <- cnd
     }
   )
+  cached_conditions <- seen$conditions
   out <- drop_result$kept_sf
 
 
@@ -860,15 +865,25 @@ cacs_acs_prefetch <- function(state,
 #' Nothing asks for `tidycensus_unknown`, so such an error uses up the three
 #' attempts and ends in the same network error as an exhausted 5xx retry.
 #'
+#' A connection error from curl has numbers that are not HTTP statuses: the
+#' port ("port 443"), the address with its port ("api.census.gov:443"), the
+#' time waited ("after 403 ms"), and a number of bytes. These are removed
+#' before the message is read, as `.extract_http_status()` does for the
+#' routing services; reading 443 as a status would stop the download at once
+#' as a refused request, when a later attempt may succeed.
+#'
 #' @keywords internal
 #' @noRd
 .classify_tidycensus_error <- function(e) {
   msg <- conditionMessage(e)
   msg_lc <- tolower(msg)
+  msg_lc <- gsub("\\bport [0-9]+", "port", msg_lc)
+  msg_lc <- gsub("([a-z0-9._-]+|\\]):[0-9]+\\b", "\\1", msg_lc)
+  msg_lc <- gsub("\\b[0-9]+ ?(ms|milliseconds?|seconds?|bytes?)\\b", "", msg_lc)
 
-  bucket <- if (grepl("\\b5[0-9]{2}\\b|server error|timeout|timed.out|504|502|503", msg_lc)) {
+  bucket <- if (grepl("\\b5[0-9]{2}\\b|server error|timeout|timed.out", msg_lc)) {
     "tidycensus_5xx"
-  } else if (grepl("\\b4[0-9]{2}\\b|bad request|forbidden|unauthorized|not.found|400|401|403|404", msg_lc)) {
+  } else if (grepl("\\b4[0-9]{2}\\b|bad request|forbidden|unauthorized|not.found", msg_lc)) {
     "tidycensus_4xx"
   } else {
     "tidycensus_unknown"

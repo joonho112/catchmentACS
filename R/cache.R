@@ -504,7 +504,7 @@ cacs_get_cache_state <- function() {
 #' returned by [cacs_cache_dir()]. Other files in the folder and the
 #' subfolders themselves are kept. A folder given in the `cache_dir` argument
 #' of another function is not changed; to clear such a folder, first set
-#' `options(catchmentACS.cache_dir = )` to it.
+#' the option to it, as in `options(catchmentACS.cache_dir = "path/to/folder")`.
 #'
 #' After deleting, `cacs_clear_cache()` sets the hit and miss counts of the
 #' cleared subfolders to zero (see [cacs_get_cache_state()]). If the cache
@@ -624,7 +624,8 @@ cacs_clear_cache <- function(namespace = c("all", "isochrone", "acs", "acs_test"
 #' [cacs_cache_dir()] and reports their total size and their oldest and
 #' newest modification times. The folder is not created if it does not
 #' exist. For a folder given in the `cache_dir` argument of another function,
-#' first set `options(catchmentACS.cache_dir = )` to it.
+#' first set the option to it, as in
+#' `options(catchmentACS.cache_dir = "path/to/folder")`.
 #'
 #' @return A tibble with one row for each subfolder (`isochrone`, `acs`,
 #'   `acs_test`, and `intersect`; see [cacs_clear_cache()]) and these
@@ -1138,14 +1139,11 @@ cacs_cache_status <- function() {
     return(NULL)
   }
 
-  read_ok <- TRUE
-  obj <- tryCatch(
-    readRDS(path),
-    error = function(e) {
-      read_ok <<- FALSE
-      NULL
-    }
-  )
+  # The value read is wrapped in a list, so that a file that cannot be read
+  # (NULL) is told apart from a saved value of any kind, NULL included.
+  obj <- tryCatch(list(value = readRDS(path)), error = function(e) NULL)
+  read_ok <- !is.null(obj)
+  obj <- obj$value
   if (!isTRUE(read_ok)) {
     .cli_inform_cache_fingerprint_mismatch(
       c("Cache fingerprint invalidated: {.val {effective_namespace}}/{substr(key, 1, 8)}...",

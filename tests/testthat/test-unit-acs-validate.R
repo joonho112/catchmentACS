@@ -31,6 +31,7 @@ test_that("T-VALIDATE-03 cacs_acs_validate has correct exported signature", {
 })
 
 test_that("T-VALIDATE-04 live tidycensus smoke (gated by CENSUS_API_KEY)", {
+  testthat::skip_on_cran()
   skip_if_no_census_api()
   skip_if_not_live_provider()
   # Live smoke test; opt-in only.

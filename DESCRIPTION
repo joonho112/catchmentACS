@@ -8,9 +8,11 @@ Description: Computes American Community Survey (ACS) estimates for the
     area within a given drive time of each of a set of points, such as the
     locations of pre-kindergarten classrooms. Such an area is called an
     isochrone. The drive-time areas come from a routing service, either the
-    'Open Source Routing Machine' ('OSRM') or 'openrouteservice', and the
-    ACS 5-year estimates of census tracts come from the Census Bureau
-    through the 'tidycensus' package, one state at a time. The tracts that
+    'Open Source Routing Machine' ('OSRM', <https://project-osrm.org/>) or
+    'openrouteservice' (<https://openrouteservice.org/>), and the ACS 5-year
+    estimates of census tracts come from the Census Bureau
+    (<https://www.census.gov/data/developers.html>) through the 'tidycensus'
+    package, one state at a time. The tracts that
     overlap an area are combined by area weighting, which uses two weights:
     the share of each tract's area that lies inside, for counts and rates,
     and each tract's share of the overlapping area, for the medians and
@@ -35,6 +37,7 @@ Description: Computes American Community Survey (ACS) estimates for the
     The margins of error of medians and per-person values are an
     approximation made by the package.
 License: MIT + file LICENSE
+Copyright: see file COPYRIGHTS
 Encoding: UTF-8
 Language: en-US
 LazyData: true
@@ -55,7 +58,7 @@ Imports:
 Suggests:
     classInt,
     htmltools,
-    knitr,
+    knitr (>= 1.35),
     leaflet,
     openrouteservice,
     osrm (>= 4.0),

@@ -26,3 +26,4 @@
 ^CRAN-SUBMISSION$
 ^vignettes/.*_files$
 ^inst/testdata/fixture_031_3site_anchors\.rds$
+^man/figures/logo\.(png|svg)$

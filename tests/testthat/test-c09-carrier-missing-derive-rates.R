@@ -272,3 +272,30 @@ test_that("C09-16 carrier-missing rows expose provenance and tract-count NA", {
   # Reasons that no row has are not listed.
   expect_false(grepl("zero_denominator", conditionMessage(res$warnings[[1L]]), fixed = TRUE))
 })
+
+
+test_that("C09-17 the warning about the rates names cacs_derive_rates() as its call, or none through do.call()", {
+  fixture <- .c09_weighted_fixture(drop = "B19056_002")
+  carrier_warnings <- function(res) {
+    Filter(function(w) inherits(w, "catchmentACS_warning_carrier_missing"),
+           res$warnings)
+  }
+  w <- carrier_warnings(.c09_run_derive(fixture))
+  expect_length(w, 1L)
+  call <- conditionCall(w[[1L]])
+  expect_true(is.call(call))
+  expect_identical(call[[1L]], quote(cacs_derive_rates))
+
+  # As cacs_run() calls it: the call would hold the whole function
+  warnings <- list()
+  withCallingHandlers(
+    do.call(cacs_derive_rates, list(fixture)),
+    warning = function(w) {
+      warnings[[length(warnings) + 1L]] <<- w
+      invokeRestart("muffleWarning")
+    }
+  )
+  w <- carrier_warnings(list(warnings = warnings))
+  expect_length(w, 1L)
+  expect_null(conditionCall(w[[1L]]))
+})

@@ -79,9 +79,12 @@ cacs_validate_iso <- function(iso_sf) {
 #' @keywords internal
 #' @noRd
 .collect_iso_schema_issues <- function(iso_sf) {
-  issues <- list()
+  # add_issue() adds each entry to an environment, which it can change in
+  # place; the list is read from there.
+  found <- new.env(parent = emptyenv())
+  found$issues <- list()
   add_issue <- function(issue) {
-    issues[[length(issues) + 1L]] <<- issue
+    found$issues[[length(found$issues) + 1L]] <- issue
     invisible(NULL)
   }
 
@@ -93,7 +96,7 @@ cacs_validate_iso <- function(iso_sf) {
       fix_hint = "Pass cacs_isochrone() output, or convert a data frame with geometry back to sf.",
       example = "iso_sf <- sf::st_as_sf(iso_sf, sf_column_name = \"geometry\", crs = 4326)"
     ))
-    return(issues)
+    return(found$issues)
   }
 
   missing_cols <- setdiff(.ISO_CANONICAL_COLS, names(iso_sf))
@@ -270,7 +273,7 @@ cacs_validate_iso <- function(iso_sf) {
     ))
   }
 
-  issues
+  found$issues
 }
 
 

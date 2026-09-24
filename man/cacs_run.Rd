@@ -265,10 +265,7 @@ The list-column form has these columns:
 \item{\code{lon}, \code{lat}}{The values of the columns of the same names in
 \code{sites}, or \code{NA} when \code{sites} has no such columns, even if it is an
 \code{sf} object such as \code{\link{cacs_alabama_sites}}; the point coordinates
-are not used. Reading the missing columns from an \code{sf} object gives
-two warnings, \verb{Unknown or uninitialised column: 'lon'} and the same
-for \code{'lat'}; the values are \code{NA} and the rest of the result is
-unaffected.}
+are not used.}
 \item{\code{drive_time_min}}{The drive time in minutes.}
 \item{\code{isochrone}}{The drive-time area, as a one-row \code{sf} object.}
 \item{\code{acs_estimates}, \code{derived_rates}}{Tibbles of the rows of the long

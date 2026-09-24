@@ -226,12 +226,13 @@
     return(paste(capture.output(tools::Rd2txt(rd_path)), collapse = "\n"))
   }
 
-  help_ref <- utils::help(topic, package = "catchmentACS")
-  if (length(help_ref) == 0L) {
+  # Installed help, as when R CMD check runs the tests: the Rd of the topic
+  # from the installed package's help database.
+  rd <- tools::Rd_db("catchmentACS")[[paste0(topic, ".Rd")]]
+  if (is.null(rd)) {
     testthat::skip("Installed help topic is not available in this context")
   }
-  paste(capture.output(tools::Rd2txt(utils:::.getHelpFile(help_ref))),
-        collapse = "\n")
+  paste(capture.output(tools::Rd2txt(rd)), collapse = "\n")
 }
 
 test_that("res default notice class is registered", {

@@ -143,13 +143,16 @@ cacs_capture_conditions <- function(expr, classes = NULL,
   }
 
   # Below: the same capture without keeping the value of `expr`.
-  captured <- list()
+  # The handler adds each record to an environment, which it can change in
+  # place.
+  captured <- new.env(parent = emptyenv())
+  captured$records <- list()
 
   handler <- function(cnd) {
     if (!.cacs_condition_matches(cnd, targets)) {
       return(invisible(NULL))
     }
-    captured[[length(captured) + 1L]] <<- .cacs_condition_record(cnd)
+    captured$records[[length(captured$records) + 1L]] <- .cacs_condition_record(cnd)
     .cacs_try_muffle_condition(cnd)
     invisible(NULL)
   }
@@ -159,7 +162,7 @@ cacs_capture_conditions <- function(expr, classes = NULL,
     catchmentACS_condition = handler
   )
 
-  .cacs_condition_records_tbl(captured)
+  .cacs_condition_records_tbl(captured$records)
 }
 
 
@@ -180,13 +183,16 @@ cacs_capture_conditions <- function(expr, classes = NULL,
 #' @keywords internal
 #' @noRd
 .cacs_capture_conditions_with_value <- function(quo, targets) {
-  captured <- list()
+  # The handler adds each record to an environment, which it can change in
+  # place.
+  captured <- new.env(parent = emptyenv())
+  captured$records <- list()
 
   handler <- function(cnd) {
     if (!.cacs_condition_matches(cnd, targets)) {
       return(invisible(NULL))
     }
-    captured[[length(captured) + 1L]] <<- .cacs_condition_record(cnd)
+    captured$records[[length(captured$records) + 1L]] <- .cacs_condition_record(cnd)
     .cacs_try_muffle_condition(cnd)
     invisible(NULL)
   }
@@ -198,7 +204,7 @@ cacs_capture_conditions <- function(expr, classes = NULL,
 
   list(
     result     = result,
-    conditions = .cacs_condition_records_tbl(captured)
+    conditions = .cacs_condition_records_tbl(captured$records)
   )
 }
 

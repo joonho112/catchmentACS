@@ -383,11 +383,12 @@ cacs_intersect_weight <- function(iso_sf,
     }
   }
 
-  # Turn off s2 (spherical geometry in sf) while this function runs; on.exit()
-  # restores the previous setting, also after an error.
-  prev_s2 <- sf::sf_use_s2()
-  on.exit(suppressMessages(sf::sf_use_s2(prev_s2)), add = TRUE, after = FALSE)
-  suppressMessages(sf::sf_use_s2(FALSE))
+  # Turn off s2 (spherical geometry in sf) while this function runs. sf keeps
+  # the setting in the option sf_use_s2 (sf 1.0-9 and later) and reads it
+  # there; on.exit() puts the option back as it was, also after an error and
+  # also when it was not set, which sf::sf_use_s2(prev) would set to TRUE.
+  prev_s2 <- options(sf_use_s2 = FALSE)
+  on.exit(options(prev_s2), add = TRUE, after = FALSE)
 
   # Measure all areas in EPSG:5070 (NAD83 / Conus Albers), an equal-area
   # projection: the area of a shape on the projected map is its area on the

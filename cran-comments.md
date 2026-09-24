@@ -22,12 +22,20 @@ This is a new submission.
 On the local machine only, a second note says that its HTML Tidy is too old to
 validate the HTML help pages.
 
+The note may also list words in DESCRIPTION as possibly misspelled. These are
+correct: ACS (American Community Survey, written out in the Description),
+isochrone and Isochrone (the area reachable within a given drive time, defined
+in the Description), and pre (from "pre-kindergarten").
+
 ## Examples
 
 The examples that download data from the Census Bureau, which needs an API
-key, or that send requests to the public OSRM demo server, which limits the
-requests it accepts, are wrapped in `\dontrun{}`. Each help page with such an
-example also has examples that run, using data included in the package.
+key, are wrapped in `\dontrun{}` (six help pages). So are the examples in
+`?cacs_isochrone` and `?cacs_validate_osrm_endpoint` that send requests to the
+public OSRM demo server: they need no key, but the server is a shared service
+that limits the requests it accepts, and the example in `?cacs_isochrone`
+alone sends several dozen. Each help page with such an example also has
+examples that run without a key or an internet connection.
 
 ## Files written by the package
 
@@ -37,6 +45,23 @@ between sessions, such as `tools::R_user_dir("catchmentACS", "cache")`, is
 used only when the user sets the option `catchmentACS.cache_dir` or the
 environment variable `CACS_CACHE_DIR`. The examples, tests, and vignettes
 write only inside `tempdir()`.
+
+## Other notes
+
+* The values `"mapbox"` and `"r5r"` of `provider` in `cacs_isochrone()` and
+  `cacs_run()`, and `"population"` of `weight_method` in
+  `cacs_intersect_weight()` and `cacs_run()`, together with the arguments used
+  only with them, are not implemented in this version. With one of these
+  values, the functions stop with an error that says so, before any request
+  is sent; the help pages and NEWS.md say the same. A few arguments that no
+  longer have an effect, such as `confirm` in `cacs_set_cache()`, are kept so
+  that code written for the earlier versions on GitHub still runs; their help
+  says that they have no effect.
+* `cacs_describe()` shows its description by calling `print()` on the object
+  it returns. The print method writes with the cli package, as messages that
+  `suppressMessages()` hides.
+* `cacs_set_cache()` is the function for setting the option
+  `catchmentACS.cache_enabled`; its example restores the option.
 
 ## Reverse dependencies
 

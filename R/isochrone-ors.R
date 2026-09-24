@@ -452,11 +452,6 @@
 
 
 # Used only when openrouteservice returns a list rather than an sf object.
-# jsonlite is in Suggests, so this stops when it is not installed.
 jsonlite_toJSON_safe <- function(x) {
-  if (requireNamespace("jsonlite", quietly = TRUE)) {
-    jsonlite::toJSON(x, auto_unbox = TRUE, force = TRUE)
-  } else {
-    stop("Cannot parse ORS list response without jsonlite; install jsonlite or upgrade openrouteservice to >= 0.5")
-  }
+  jsonlite::toJSON(x, auto_unbox = TRUE, force = TRUE)
 }

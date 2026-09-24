@@ -47,6 +47,32 @@ test_that("P5-COV-ACS-03 tidycensus error classifier buckets messages", {
 })
 
 
+test_that("P5-COV-ACS-03b a port number or a waiting time in a connection error is not an HTTP status", {
+  # curl names the port, the address with its port, and the time it waited.
+  # None of these numbers is an HTTP status, so a connection failure is tried
+  # again like any other error that is neither 4xx nor 5xx.
+  connection_failures <- c(
+    "Failed to connect to api.census.gov port 443 after 21 ms: Couldn't connect to server",
+    "Failed to connect to api.census.gov port 443 after 403 ms: Couldn't connect to server",
+    "SSL connect error: api.census.gov:443",
+    "OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to api.census.gov:443"
+  )
+  for (msg in connection_failures) {
+    expect_s3_class(.classify_tidycensus_error(simpleError(msg)), "tidycensus_unknown")
+  }
+
+  # A timeout is still tried again as a 5xx error, and a status written as a
+  # status is still read.
+  timeout <- .classify_tidycensus_error(simpleError(paste(
+    "Timeout was reached: [api.census.gov:443] Operation timed out after",
+    "10001 milliseconds with 0 out of 404 bytes received"
+  )))
+  expect_s3_class(timeout, "tidycensus_5xx")
+  expect_s3_class(.classify_tidycensus_error(simpleError("Not Found (HTTP 404).")), "tidycensus_4xx")
+  expect_s3_class(.classify_tidycensus_error(simpleError("Service Unavailable (HTTP 503).")), "tidycensus_5xx")
+})
+
+
 test_that("P5-COV-ACS-04 state and cache-dir helpers cover success/failure", {
   expect_true(.validate_state_in_fips("AL"))
   expect_true(.validate_state_in_fips("01"))

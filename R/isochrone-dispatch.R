@@ -23,6 +23,12 @@
 #' no result. It does the same when the service refuses access (HTTP status
 #' 401 or 403), for example because an API key is not accepted.
 #'
+#' The requests have no time limit of their own: a server that accepts the
+#' connection but does not answer makes the function wait, and a server that
+#' cannot be reached is tried three times for each site before the site is
+#' reported as failed. [cacs_validate_osrm_endpoint()] checks an OSRM server
+#' with a time limit and can be called first.
+#'
 #' Unless the cache is turned off with [cacs_set_cache()], the result is
 #' saved in the cache folder (`cache_dir`, or [cacs_cache_dir()]), which by
 #' default lasts only for the R session. A later call with the same arguments
@@ -156,9 +162,11 @@
 #' below). `provider = "ors"` uses openrouteservice through the
 #' openrouteservice package and needs an API key, given in `ors_api_key`; if
 #' the key is empty, the function stops with an error of class
-#' `catchmentACS_error_credential` before any request is sent. The two
-#' services compute the areas in different ways, so the area for the same
-#' site and drive time can differ between them.
+#' `catchmentACS_error_credential` before any request is sent. The
+#' openrouteservice route has been checked only with simulated responses
+#' from openrouteservice, not with the service itself. The two services
+#' compute the areas in different ways, so the area for the same site and
+#' drive time can differ between them.
 #'
 #' @section OSRM servers:
 #' With `osrm_mode = "demo"`, the requests go to the public OSRM demo server

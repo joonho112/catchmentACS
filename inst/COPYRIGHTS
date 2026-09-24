@@ -1,0 +1,28 @@
+catchmentACS is copyright JoonHo Lee and is licensed under the MIT license
+(see the file LICENSE).
+
+Some of the data files installed with the package hold data from other
+sources. The folders are those of the installed package; in the source
+package they are under inst/.
+
+These files hold drive-time areas computed from OpenStreetMap data, or values
+computed from such areas:
+
+  extdata/visual_walkthrough_fixture.rds
+  testdata/fixture_032_3site_fresh.rds
+  testdata/iso_3site_demo.rds
+  testdata/run_result_3site_demo.rds
+  testdata/fixture_cache_poison.rds
+
+OpenStreetMap data: © OpenStreetMap contributors, available under the Open
+Database License (https://www.openstreetmap.org/copyright).
+
+These files hold American Community Survey estimates, values computed from
+them, or census tract boundaries from the U.S. Census Bureau, which, as works
+of the United States Government, are not subject to copyright in the United
+States:
+
+  extdata/visual_walkthrough_fixture.rds
+  testdata/fixture_032_3site_fresh.rds
+  testdata/run_result_3site_demo.rds
+  testdata/fixture_water_tract_baldwin.rds

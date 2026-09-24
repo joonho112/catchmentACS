@@ -120,6 +120,7 @@ test_that("STEP42-07 emit helper produces correct class chain", {
 # --- Env-gated live test ---------------------------------------------------
 
 test_that("STEP42-08 [LIVE] real OSRM demo endpoint", {
+  testthat::skip_on_cran()
   skip_if_not(
     identical(Sys.getenv("CATCHMENTACS_LIVE_OSRM"), "1"),
     "Set CATCHMENTACS_LIVE_OSRM=1 to enable live OSRM endpoint test"

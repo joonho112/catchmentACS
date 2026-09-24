@@ -259,6 +259,49 @@ test_that("T20-11c force_refresh with no Census key aborts before codebook/backe
 })
 
 
+test_that("T20-11d a connection failure naming port 443 is tried three times and ends in a network error", {
+  .with_acs_cache_dir({
+    .with_fake_census_key_int({
+      cb <- helper_mock_codebook(known = "B19013_001")
+      testthat::local_mocked_bindings(
+        load_variables = function(year, dataset, ...) cb,
+        .package = "tidycensus"
+      )
+      testthat::local_mocked_bindings(
+        Sys.sleep = function(time) invisible(NULL),
+        .package = "base"
+      )
+
+      call_n <- 0L
+      testthat::local_mocked_bindings(
+        .tidycensus_get_acs_call = function(geography, variables, state, year, survey) {
+          call_n <<- call_n + 1L
+          stop("Failed to connect to api.census.gov port 443 after 21 ms: Couldn't connect to server")
+        },
+        .package = "catchmentACS"
+      )
+
+      # Not stopped at once as a refused request (HTTP 4xx), and not reported
+      # as an HTTP 5xx error on each attempt either.
+      expect_no_warning(
+        err <- tryCatch(
+          suppressMessages(
+            cacs_acs_prefetch(state = "AL",
+                              variables = "B19013_001",
+                              verbose = FALSE)
+          ),
+          error = function(e) e
+        )
+      )
+      expect_s3_class(err, "catchmentACS_error_network")
+      expect_false(inherits(err, "catchmentACS_error_operator"))
+      expect_match(conditionMessage(err), "port 443", fixed = TRUE)
+      expect_equal(call_n, 3L)
+    })
+  })
+})
+
+
 test_that("T20-11b explicit cache_dir writes and reads from requested root", {
   td <- tempfile("cacs_acs_explicit_cache_")
   on.exit(if (dir.exists(td)) unlink(td, recursive = TRUE), add = TRUE)

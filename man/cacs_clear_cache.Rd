@@ -45,7 +45,7 @@ written by \code{cacs_acs_prefetch(write_gpkg = TRUE)}, from the cache folder
 returned by \code{\link[=cacs_cache_dir]{cacs_cache_dir()}}. Other files in the folder and the
 subfolders themselves are kept. A folder given in the \code{cache_dir} argument
 of another function is not changed; to clear such a folder, first set
-\code{options(catchmentACS.cache_dir = )} to it.
+the option to it, as in \code{options(catchmentACS.cache_dir = "path/to/folder")}.
 }
 \details{
 After deleting, \code{cacs_clear_cache()} sets the hit and miss counts of the

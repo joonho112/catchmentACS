@@ -39,7 +39,8 @@
 #'   and [cacs_run()] also need the other columns of a [cacs_isochrone()]
 #'   result; [cacs_validate_iso()] lists any that are missing.
 #'
-#' @family rates and margins of error
+#' @seealso [cacs_isochrone()], which returns cumulative areas, and
+#'   [cacs_validate_iso()], which checks drive-time areas from other sources.
 #'
 #' @examples
 #' # Two bands for one site: 0 to 5 minutes and 5 to 10 minutes

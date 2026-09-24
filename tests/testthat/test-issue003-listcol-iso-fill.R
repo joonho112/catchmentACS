@@ -116,6 +116,36 @@ test_that("ISSUE003-05 emit captured: resolved-iso fill emits listcol_iso_filled
   expect_gte(nrow(cap), 1L)
 })
 
+test_that("ISSUE003-07 the result does not keep the internal attribute iso_was_filled", {
+  long_final <- .mk_synth_long_final(c("S1", "S2"), 10L)
+  iso <- .mk_synth_iso_sf(c("S1", "S2"), 10L)
+  sites <- tibble::tibble(site_id = c("S1", "S2"), lon = 1:2, lat = 1:2)
+  out <- suppressMessages(
+    catchmentACS:::.pivot_to_list_column(long_final, sites, iso_sf = iso)
+  )
+  expect_true(all(vapply(out$isochrone,
+                          function(x) inherits(x, "sf"),
+                          logical(1))))
+  expect_null(attr(out, "iso_was_filled"))
+})
+
+test_that("ISSUE003-08 sf sites without lon and lat columns give NA coordinates and no warning", {
+  long_final <- .mk_synth_long_final(c("S1", "S2"), 10L)
+  pts <- sf::st_sfc(sf::st_point(c(-86.8, 33.5)), sf::st_point(c(-86.7, 33.6)),
+                    crs = 4326)
+  # An sf object built on a tibble and one built on a data frame
+  sites_tbl <- sf::st_sf(tibble::tibble(site_id = c("S1", "S2")), geometry = pts)
+  sites_df <- sf::st_sf(data.frame(site_id = c("S1", "S2")), geometry = pts)
+  expect_s3_class(sites_tbl, "tbl_df")
+  for (sites in list(sites_tbl, sites_df)) {
+    expect_no_warning(
+      out <- catchmentACS:::.pivot_to_list_column(long_final, sites)
+    )
+    expect_identical(out$lon, c(NA_real_, NA_real_))
+    expect_identical(out$lat, c(NA_real_, NA_real_))
+  }
+})
+
 test_that("ISSUE003-06 partial match: iso missing one site → that row NULL", {
   long_final <- .mk_synth_long_final(c("S1", "S2", "S3"), 10L)
   iso <- .mk_synth_iso_sf(c("S1", "S3"), 10L)   # S2 missing

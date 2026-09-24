@@ -61,6 +61,11 @@
   such as "port 443", as an HTTP status. A connection failure or a timeout is
   therefore tried again, up to three times, as the help page describes;
   before, the site was not tried again.
+* `cacs_acs_prefetch()` likewise no longer reads a port number or a waiting
+  time in a connection error as an HTTP status. A connection failure is
+  tried up to three times and then stops with an error of class
+  `catchmentACS_error_network`; before, it stopped at once with an error
+  saying that the Census Bureau had refused the request.
 * `cacs_isochrone()` no longer saves a result in which routing failed for a
   site in a way that may be temporary (no answer, a timeout, or an HTTP 5xx
   status), and it does not use such a result saved by an earlier version, so
@@ -75,6 +80,14 @@
   lwgeom required" when spherical geometry is turned off with
   `sf::sf_use_s2(FALSE)`: the check for tracts without area now measures the
   tracts in EPSG:5070 in that case, so the lwgeom package is not needed.
+* `cacs_intersect_weight()`, and so `cacs_run()`, now leaves the option
+  `sf_use_s2` as it was. It turns spherical geometry off while it runs, as
+  before, but it used to set the option to `TRUE` afterwards when the option
+  had not been set.
+* `cacs_run(output = "list_column")` no longer gives the warnings
+  `Unknown or uninitialised column` when `sites` is an sf object built on a
+  tibble without `lon` and `lat` columns. The two columns of the result are
+  `NA`, as before, and are read only from columns with exactly these names.
 * `cacs_acs_prefetch()` now reads back a result it saved together with its
   message about removed water tracts also when the package is installed with
   its sources kept (for example with `R_KEEP_PKG_SOURCE=yes`). The saved
@@ -122,7 +135,14 @@
   topology, provider values, and missing columns. The `check` values and the
   columns of the table are unchanged.
 * The suggested packages mapboxapi, r5r, httptest2, covr, lintr, pkgdown, and
-  roxygen2 were dropped; none of them was used by the package.
+  roxygen2 were dropped; none of them was used by the package. Building the
+  vignettes needs knitr 1.35 or later.
+* The warning of `cacs_derive_rates()` about rates that are `NA` or use a
+  replacement formula no longer names an internal function as its call. It
+  names the call of `cacs_derive_rates()`, or no call when `cacs_run()` calls
+  it.
+* A `cacs_run(output = "list_column")` result no longer has the attribute
+  `iso_was_filled`, which was used only inside the package.
 
 ## Documentation
 
@@ -135,6 +155,8 @@
   `?cacs_acs_prefetch` show results of those functions stored in the package.
 * The help pages describe the changes above and, where they apply, the
   limitations below.
+* The new file `COPYRIGHTS` names the bundled data files that hold
+  OpenStreetMap or Census Bureau data and gives the notices for those data.
 
 ## Known limitations
 
@@ -144,6 +166,12 @@
   rates.
 * `cacs_isochrone(provider = "ors")` has been checked only with simulated
   responses from openrouteservice.
+* `cacs_isochrone()` sets no time limit on its requests. A routing server
+  that accepts the connection but does not answer makes the call wait, and a
+  server that cannot be reached is tried three times for each site, so a call
+  with many sites can take minutes before it returns a result in which every
+  site failed. `cacs_validate_osrm_endpoint()` checks an OSRM server with a
+  time limit.
 * `cacs_acs_prefetch()` downloads American Community Survey (ACS) 5-year
   estimates for the census tracts of one state per call.
 * `cacs_intersect_weight()` and `cacs_run()` decide how to combine a variable

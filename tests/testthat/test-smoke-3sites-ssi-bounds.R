@@ -1,4 +1,5 @@
 skip_live_phase4_ssi_smoke <- function() {
+  testthat::skip_on_cran()
   if (!identical(Sys.getenv("CACS_LIVE_OSRM"), "1") ||
       !identical(Sys.getenv("CACS_LIVE_CENSUS"), "1") ||
       !nzchar(Sys.getenv("CENSUS_API_KEY"))) {

@@ -1,4 +1,5 @@
 skip_live_phase3_smoke <- function() {
+  testthat::skip_on_cran()
   testthat::skip_if_not(
     identical(Sys.getenv("CACS_LIVE_OSRM"), "1") &&
       identical(Sys.getenv("CACS_LIVE_CENSUS"), "1") &&

@@ -252,10 +252,7 @@
 #'     \item{`lon`, `lat`}{The values of the columns of the same names in
 #'       `sites`, or `NA` when `sites` has no such columns, even if it is an
 #'       `sf` object such as [`cacs_alabama_sites`]; the point coordinates
-#'       are not used. Reading the missing columns from an `sf` object gives
-#'       two warnings, `Unknown or uninitialised column: 'lon'` and the same
-#'       for `'lat'`; the values are `NA` and the rest of the result is
-#'       unaffected.}
+#'       are not used.}
 #'     \item{`drive_time_min`}{The drive time in minutes.}
 #'     \item{`isochrone`}{The drive-time area, as a one-row `sf` object.}
 #'     \item{`acs_estimates`, `derived_rates`}{Tibbles of the rows of the long
@@ -1252,16 +1249,14 @@ cacs_run <- function(sites,
     tibble::as_tibble(sites_input)
   }
   # Without `lon` or `lat` columns (an sf object of points often has none),
-  # the values are NA: the point coordinates are not used. On a tibble, `$`
-  # also gives a warning for each missing column.
+  # the values are NA: the point coordinates are not used. The columns are
+  # read with `[[`, which gives NULL for a missing column also on a tibble,
+  # where `$` would give a warning.
+  first_row <- match(unique(sites_tbl[["site_id"]]), sites_tbl[["site_id"]])
   sites_coords <- tibble::tibble(
-    site_id = unique(sites_tbl$site_id),
-    lon     = if (!is.null(sites_tbl$lon))
-                sites_tbl$lon[match(unique(sites_tbl$site_id), sites_tbl$site_id)]
-              else NA_real_,
-    lat     = if (!is.null(sites_tbl$lat))
-                sites_tbl$lat[match(unique(sites_tbl$site_id), sites_tbl$site_id)]
-              else NA_real_
+    site_id = unique(sites_tbl[["site_id"]]),
+    lon     = if (!is.null(sites_tbl[["lon"]])) sites_tbl[["lon"]][first_row] else NA_real_,
+    lat     = if (!is.null(sites_tbl[["lat"]])) sites_tbl[["lat"]][first_row] else NA_real_
   )
 
   long_tbl <- tibble::as_tibble(long_final)
@@ -1366,6 +1361,9 @@ cacs_run <- function(sites,
       # Shown on every call that fills a cell, whatever `verbose` is.
       .cli_inform_listcol_iso_filled()
     }
+    # The attribute only tells this function that a cell was filled; the
+    # result does not keep it.
+    attr(out, "iso_was_filled") <- NULL
   }
 
   # The eight columns, in this order.

@@ -52,7 +52,6 @@ explains the calculations.
 
 Other rates and margins of error:
 \code{\link[=cacs_moe_to_se]{cacs_moe_to_se()}},
-\code{\link[=cacs_rings_to_cumulative]{cacs_rings_to_cumulative()}},
 \code{\link[=cacs_se_to_moe]{cacs_se_to_moe()}}
 }
 \concept{rates and margins of error}

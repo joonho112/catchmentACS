@@ -37,7 +37,8 @@ Counts the files in each subfolder of the cache folder returned by
 \code{\link[=cacs_cache_dir]{cacs_cache_dir()}} and reports their total size and their oldest and
 newest modification times. The folder is not created if it does not
 exist. For a folder given in the \code{cache_dir} argument of another function,
-first set \code{options(catchmentACS.cache_dir = )} to it.
+first set the option to it, as in
+\code{options(catchmentACS.cache_dir = "path/to/folder")}.
 }
 \examples{
 cacs_cache_status()

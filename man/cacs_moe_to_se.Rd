@@ -49,7 +49,6 @@ area estimates.
 
 Other rates and margins of error:
 \code{\link{cacs_acs_default_rates}},
-\code{\link[=cacs_rings_to_cumulative]{cacs_rings_to_cumulative()}},
 \code{\link[=cacs_se_to_moe]{cacs_se_to_moe()}}
 }
 \concept{rates and margins of error}

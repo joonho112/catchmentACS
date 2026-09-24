@@ -162,6 +162,12 @@ that answer comes, sends no requests for the remaining sites, and returns
 no result. It does the same when the service refuses access (HTTP status
 401 or 403), for example because an API key is not accepted.
 
+The requests have no time limit of their own: a server that accepts the
+connection but does not answer makes the function wait, and a server that
+cannot be reached is tried three times for each site before the site is
+reported as failed. \code{\link[=cacs_validate_osrm_endpoint]{cacs_validate_osrm_endpoint()}} checks an OSRM server
+with a time limit and can be called first.
+
 Unless the cache is turned off with \code{\link[=cacs_set_cache]{cacs_set_cache()}}, the result is
 saved in the cache folder (\code{cache_dir}, or \code{\link[=cacs_cache_dir]{cacs_cache_dir()}}), which by
 default lasts only for the R session. A later call with the same arguments
@@ -185,9 +191,11 @@ needs no API key; \code{osrm_mode} chooses the server (see the OSRM sections
 below). \code{provider = "ors"} uses openrouteservice through the
 openrouteservice package and needs an API key, given in \code{ors_api_key}; if
 the key is empty, the function stops with an error of class
-\code{catchmentACS_error_credential} before any request is sent. The two
-services compute the areas in different ways, so the area for the same
-site and drive time can differ between them.
+\code{catchmentACS_error_credential} before any request is sent. The
+openrouteservice route has been checked only with simulated responses
+from openrouteservice, not with the service itself. The two services
+compute the areas in different ways, so the area for the same site and
+drive time can differ between them.
 }
 
 \section{OSRM servers}{

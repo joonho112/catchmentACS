@@ -77,9 +77,6 @@ unique(cumulative$ring_topology)
 
 }
 \seealso{
-Other rates and margins of error:
-\code{\link{cacs_acs_default_rates}},
-\code{\link[=cacs_moe_to_se]{cacs_moe_to_se()}},
-\code{\link[=cacs_se_to_moe]{cacs_se_to_moe()}}
+\code{\link[=cacs_isochrone]{cacs_isochrone()}}, which returns cumulative areas, and
+\code{\link[=cacs_validate_iso]{cacs_validate_iso()}}, which checks drive-time areas from other sources.
 }
-\concept{rates and margins of error}
