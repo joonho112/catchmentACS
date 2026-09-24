@@ -65,3 +65,37 @@ test_that("ACS-CODE-04 the bundled ACS sample gives no warning about codes or re
   )
   expect_false(any(grepl("annotation code", warnings_seen, fixed = TRUE)))
 })
+
+# The messages of the warnings about annotation codes, with their white space
+# made single (cli wraps long messages).
+.code_warnings <- function(x) {
+  seen <- character()
+  withCallingHandlers(
+    .run_intersect(x),
+    warning = function(w) {
+      msg <- gsub("\\s+", " ", conditionMessage(w))
+      if (grepl("annotation code", msg, fixed = TRUE)) seen <<- c(seen, msg)
+      invokeRestart("muffleWarning")
+    }
+  )
+  seen
+}
+
+test_that("ACS-CODE-05 the warning names the code found in the data", {
+  w <- .code_warnings(helper_acs_two_tracts(moe = c(50, -222222222)))
+  expect_length(w, 1L)
+  expect_true(grepl("-222222222", w, fixed = TRUE))
+  expect_false(grepl("-666666666", w, fixed = TRUE))
+  expect_true(grepl("0 estimates and 1 margin of error", w, fixed = TRUE))
+})
+
+test_that("ACS-CODE-06 the warning names each code found, and only those", {
+  x <- helper_acs_two_tracts(estimate = c(-666666666, 2000),
+                             moe = c(50, -333333333))
+  w <- .code_warnings(x)
+  expect_length(w, 1L)
+  expect_true(grepl("-666666666", w, fixed = TRUE))
+  expect_true(grepl("-333333333", w, fixed = TRUE))
+  expect_false(grepl("-222222222", w, fixed = TRUE))
+  expect_true(grepl("1 estimate and 1 margin of error", w, fixed = TRUE))
+})

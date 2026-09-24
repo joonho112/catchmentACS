@@ -25,7 +25,7 @@ knitr::opts_chunk$set(
 ```
 
 Scripts written for catchmentACS 0.1 or 0.2 can stop with an error under
-version 0.5.1, or run and give different results.
+version 0.6.0, or run and give different results.
 `vignette("porting-v03-to-v04", package = "catchmentACS")` and
 `vignette("porting-v04-to-v05", package = "catchmentACS")` describe the changes
 of versions 0.4 and 0.5 in more detail.
@@ -365,7 +365,7 @@ dplyr::count(tracts, site_id, drive_time_min, name = "tracts")
 Areas built again can differ from the saved ones. One reason is the OSRM grid
 resolution `res`: the osrm package draws each area from travel times to a grid
 of `res` by `res` points around the site. Without `res`, version 0.2 used 50;
-version 0.5.1 uses `30L` with `osrm_mode = "demo"`, the default, and `70L` with
+version 0.6.0 uses `30L` with `osrm_mode = "demo"`, the default, and `70L` with
 `osrm_mode = "docker"`. Version 0.2 dropped `res` from `iso_args` with a
 warning, so a script that gave it there used 50 as well. To build the areas on
 the grid of version 0.2, set `res = 50L` in `cacs_isochrone()`, or

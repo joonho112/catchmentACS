@@ -3,7 +3,7 @@ skip_live_phase4_ssi_smoke <- function() {
       !identical(Sys.getenv("CACS_LIVE_CENSUS"), "1") ||
       !nzchar(Sys.getenv("CENSUS_API_KEY"))) {
     testthat::skip(
-      "set CACS_LIVE_OSRM=1, CACS_LIVE_CENSUS=1, and CENSUS_API_KEY to run Phase 4 SSI smoke"
+      "set CACS_LIVE_OSRM=1, CACS_LIVE_CENSUS=1, and CENSUS_API_KEY to run the live SSI smoke tests"
     )
   }
 }

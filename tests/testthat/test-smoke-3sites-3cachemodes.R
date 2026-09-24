@@ -3,7 +3,7 @@ skip_live_phase3_smoke <- function() {
     identical(Sys.getenv("CACS_LIVE_OSRM"), "1") &&
       identical(Sys.getenv("CACS_LIVE_CENSUS"), "1") &&
       nzchar(Sys.getenv("CENSUS_API_KEY")),
-    "set CACS_LIVE_OSRM=1, CACS_LIVE_CENSUS=1, and CENSUS_API_KEY to run Phase 3 live smoke"
+    "set CACS_LIVE_OSRM=1, CACS_LIVE_CENSUS=1, and CENSUS_API_KEY to run the live smoke tests"
   )
 }
 

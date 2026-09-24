@@ -143,7 +143,7 @@ goes through the result column by column, and
 [Routing services, API keys, and offline use](https://joonho112.github.io/catchmentACS/articles/providers.html)
 covers the routing services and their keys.
 
-## What version 0.5.1 does
+## What version 0.6.0 does
 
 - Area weighting of the tracts that overlap each drive-time area. It is the
   only weighting method in this version.

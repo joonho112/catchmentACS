@@ -789,9 +789,10 @@ cacs_intersect_weight <- function(iso_sf,
 #' estimate code would enter the weighted sums and a margin-of-error code would
 #' be squared. Both become `NA`, which gives `NA` values downstream as the
 #' help page of cacs_intersect_weight() describes. A warning counts the
-#' estimates and the margins of error that were set to `NA`; a margin-of-error
-#' code next to a missing estimate is not counted, because the result is `NA`
-#' either way (the bundled sample data have such rows).
+#' estimates and the margins of error that were set to `NA` and names the
+#' codes found among them; a margin-of-error code next to a missing estimate is
+#' not counted, because the result is `NA` either way (the bundled sample data
+#' have such rows).
 #'
 #' @param acs_sf The `acs_sf` argument, already checked.
 #' @return `acs_sf` with the codes replaced by `NA`.
@@ -800,11 +801,16 @@ cacs_intersect_weight <- function(iso_sf,
 .cacs_acs_codes_to_na <- function(acs_sf) {
   est_code <- !is.na(acs_sf$estimate) & acs_sf$estimate %in% .ACS_ANNOTATION_CODES
   moe_code <- !is.na(acs_sf$moe) & acs_sf$moe %in% .ACS_ANNOTATION_CODES
+  moe_counted <- moe_code & !is.na(acs_sf$estimate) & !est_code
   n_est <- sum(est_code)
-  n_moe <- sum(moe_code & !is.na(acs_sf$estimate) & !est_code)
+  n_moe <- sum(moe_counted)
   if (n_est > 0L || n_moe > 0L) {
+    # The codes counted in the message, in the order of .ACS_ANNOTATION_CODES.
+    found <- c(acs_sf$estimate[est_code], acs_sf$moe[moe_counted])
+    codes <- .ACS_ANNOTATION_CODES[.ACS_ANNOTATION_CODES %in% found]
     .cli_warn_runtime(c(
-      "{.arg acs_sf} has Census Bureau annotation codes, such as {.val {-666666666}}, in place of {n_est} estimate{?s} and {n_moe} margin{?s} of error; they are treated as {.code NA}.",
+      "{.arg acs_sf} has Census Bureau annotation codes in place of {n_est} estimate{?s} and {n_moe} margin{?s} of error; they are treated as {.code NA}.",
+      "i" = "{cli::qty(length(codes))}Code{?s} in {.arg acs_sf}: {.val {codes}}.",
       "i" = "A missing estimate makes the estimate and margin of error of that variable {.code NA} for the areas that include the tract, and a missing margin of error makes its margin of error {.code NA}; a rate that uses the variable is {.code NA} in both cases."
     ), phase = "intersect")
   }

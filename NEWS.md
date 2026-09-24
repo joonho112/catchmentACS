@@ -1,3 +1,186 @@
+# catchmentACS 0.6.0
+
+## Changed defaults
+
+* `cacs_isochrone()`, `cacs_acs_prefetch()`, and `cacs_intersect_weight()`,
+  and so `cacs_run()`, now save their results in a folder inside the
+  temporary folder of the R session, which R deletes when the session ends.
+  Versions 0.5.1 and earlier saved them in the user cache folder of the
+  operating system and kept them until they were deleted. To keep saved
+  results between sessions, add this line to the R startup file:
+  `options(catchmentACS.cache_dir = tools::R_user_dir("catchmentACS", "cache"))`.
+  A cache folder outside the temporary folder is tidied once per session:
+  results not used for 30 days are deleted, and
+  `options(catchmentACS.cache_max_age_days = )` sets another number of days.
+  The package no longer reads or deletes the folder used by earlier
+  versions; `?cacs_cache_dir` gives its location, and it can be deleted by
+  hand. The packages memoise and rappdirs are no longer needed.
+* `cacs_set_cache(scope = "global")` no longer writes to the R startup file.
+  It sets the option for the session and shows the line to add to the
+  startup file. `confirm` is kept so that code written for earlier versions
+  still runs, but it is not used.
+* `cacs_cache_dir()` no longer creates the cache folder unless
+  `create = TRUE`.
+* `as_tibble()` on a `cacs_run()` result keeps the rows in their order by
+  default. `rate_first = TRUE` puts the rate rows first within each site and
+  drive time, and `options(catchmentACS.rate_first_default = TRUE)` does the
+  same for conversions called from your own code, while conversions made
+  inside other packages keep the order. As a result, `dplyr::semi_join()`,
+  `dplyr::anti_join()`, and summaries after `dplyr::rowwise()` return the
+  right rows.
+* The map functions (`cacs_plot_site_isochrone()`,
+  `cacs_plot_site_intersection()`, `cacs_plot_site_weighted()`,
+  `cacs_plot_site_rates()`, and `cacs_plot_site_pipeline()`) now draw the
+  standard OpenStreetMap map by default (`tiles = "OpenStreetMap"`). The
+  CARTO tiles used before need an API key, which these functions do not
+  send, and they showed a notice asking for one. Any other provider in
+  `leaflet::providers` can still be chosen with `tiles`.
+
+## Bug fixes
+
+* `cacs_intersect_weight()` and `cacs_run(acs = )` now treat the Census
+  Bureau's annotation codes (-222222222, -333333333, -555555555, -666666666,
+  -888888888, and -999999999) in the estimates and margins of error of ACS
+  data given to them as missing, with a warning that names the codes found;
+  they used to enter the sums. A code in place of a margin of error therefore
+  makes that margin of error `NA`, and a rate that uses the variable `NA` as
+  well. Data from `cacs_acs_prefetch()` and the bundled data give the same
+  results as before.
+* `cacs_acs_validate()`, `cacs_intersect_weight()`, `cacs_run(acs = )`, and
+  `cacs_acs_prefetch()` now stop with an error when a tract has two rows for
+  the same variable; such a row used to be added twice.
+* `cacs_intersect_weight()`, and `cacs_run()` through it, now recognize saved
+  results by the drive-time areas themselves, so a subset or an edited copy
+  of a `cacs_isochrone()` result no longer returns rows saved for another
+  subset. The key also no longer depends on how the row names of the areas
+  are stored. Results saved by earlier versions are computed again once.
+* `cacs_isochrone()` now stops at the first site that gets HTTP status 429,
+  401, or 403 and sends no request for the remaining sites; before, it tried
+  every site first.
+* `cacs_isochrone()` no longer reads a port number in a connection error,
+  such as "port 443", as an HTTP status. A connection failure or a timeout is
+  therefore tried again, up to three times, as the help page describes;
+  before, the site was not tried again.
+* `cacs_isochrone()` no longer saves a result in which routing failed for a
+  site in a way that may be temporary (no answer, a timeout, or an HTTP 5xx
+  status), and it does not use such a result saved by an earlier version, so
+  a temporary failure is not returned again from the cache. A site that the
+  routing service rejects with another HTTP 4xx status is saved with the
+  result, and a warning says so when the saved result is used.
+* A server set with `options(osrm.server = )` now stays in use over repeated
+  `cacs_isochrone()` calls; before, loading the osrm package during the first
+  call replaced it with the public demo server for later calls, and the
+  record kept with the result named that server.
+* `cacs_acs_prefetch()`, and so `cacs_run()`, no longer stops with "package
+  lwgeom required" when spherical geometry is turned off with
+  `sf::sf_use_s2(FALSE)`: the check for tracts without area now measures the
+  tracts in EPSG:5070 in that case, so the lwgeom package is not needed.
+* `cacs_acs_prefetch()` now reads back a result it saved together with its
+  message about removed water tracts also when the package is installed with
+  its sources kept (for example with `R_KEEP_PKG_SOURCE=yes`). The saved
+  message kept a reference to the package source that changed when the file
+  was read, so the saved copy never matched its checksum file and each call
+  downloaded the data again.
+* The map functions now find the bundled `cacs_alabama_sites` table when they
+  are called as `catchmentACS::` without `library(catchmentACS)`, and an
+  object of the same name in the global environment no longer takes its
+  place.
+* `cacs_derive_rates()` now gives an error for an argument passed through
+  `...`, such as `level = 0.95`, which it used to ignore; the confidence level
+  is set in `cacs_propagate_moe()`.
+* `cacs_intersect_weight()`, and so `cacs_run()`, now stops with an error of
+  class `catchmentACS_error_geometry` when the geometry of no row of the
+  drive-time areas or of the tracts can be repaired; before, an error in
+  writing the message took its place.
+* `cacs_summary_as_markdown()` now names the confidence level of the result
+  in the caption of `rates_per_site_moe`, which always said 90%; `summary()`
+  records the level on that table.
+
+## Other changes
+
+* `cacs_intersect_weight()` has a new argument `cache_dir`, as
+  `cacs_isochrone()` and `cacs_acs_prefetch()` have, and
+  `cacs_run(cache_dir = )` now applies to all three steps.
+* `cacs_clear_cache()` and `cacs_cache_status()` now handle only the files
+  named the way the package names its saved files, and they include the
+  GeoPackage files written by `cacs_acs_prefetch(write_gpkg = TRUE)`.
+  `cacs_clear_cache(confirm = TRUE)` in a non-interactive session now says
+  that it deleted nothing because it could not ask for confirmation.
+* The `phase` values that `cacs_capture_conditions()` returns for conditions
+  from `cacs_run()`, `cacs_derive_rates()`, and `cacs_propagate_moe()` are now
+  `"run"`, `"rates"`, and `"moe"`; before, they were longer labels that began
+  with a section number of an internal design document. Several warnings and
+  messages that had no `phase` now have the name of their step, such as
+  `"isochrone"` or `"intersect"`.
+* Error, warning, and progress messages were rewritten to say what happened
+  and what to do. They no longer refer to development versions, to sections
+  of an internal design document, or to functions and arguments that do not
+  exist (such as `cacs_derive_rates_custom()` and `crs_area`). The messages
+  about the OSRM `res` value used when `res` is not given say which value was
+  used and how to choose another. The condition classes are unchanged.
+* `cacs_validate_iso()` gives plainer `fix_hint` and `expected` text for ring
+  topology, provider values, and missing columns. The `check` values and the
+  columns of the table are unchanged.
+* The suggested packages mapboxapi, r5r, httptest2, covr, lintr, pkgdown, and
+  roxygen2 were dropped; none of them was used by the package.
+
+## Documentation
+
+* The vignettes are R Markdown documents built with knitr instead of Quarto
+  documents, so building the package no longer needs the Quarto command-line
+  tool. Their formulas are written as MathML: in the vignettes opened with
+  `vignette()`, longer formulas were shown as TeX code before and are now
+  displayed as formulas, also without an internet connection.
+* Every exported topic has an example that runs; `?cacs_isochrone` and
+  `?cacs_acs_prefetch` show results of those functions stored in the package.
+* The help pages describe the changes above and, where they apply, the
+  limitations below.
+
+## Known limitations
+
+* `cacs_isochrone()` and `cacs_run()` do not build drive-time areas with
+  `provider = "mapbox"` or `provider = "r5r"`, which are not implemented and
+  give an error, and `cacs_derive_rates()` accepts only the five built-in
+  rates.
+* `cacs_isochrone(provider = "ors")` has been checked only with simulated
+  responses from openrouteservice.
+* `cacs_acs_prefetch()` downloads American Community Survey (ACS) 5-year
+  estimates for the census tracts of one state per call.
+* `cacs_intersect_weight()` and `cacs_run()` decide how to combine a variable
+  from its ACS code alone. Codes in tables B19013 and B25077 are treated as
+  medians, codes in table B19301 as per-person values, and every other code
+  made of "B", five digits, an underscore, and three digits as a count, which
+  is added up over the tracts. A median or per-person value with a code of
+  that form from any other table therefore comes out as a sum of tract
+  values, with `weight_basis = "coverage"` and no warning.
+* A rate from `cacs_derive_rates()` or `cacs_run()` divides the total of its
+  numerator by the total of its denominator, even when the two totals come
+  from different tracts. This happens when the ACS data have a tract's row for
+  one of the two codes but not for the other, for example after rows with a
+  missing estimate were removed. The rate can then be far from the share for
+  the area, even above 1, without a warning; `n_tracts_num` and
+  `n_tracts_den` then differ, unless the two codes lack the same number of
+  tracts.
+* When the ACS data have no row for a tract and a variable,
+  `cacs_intersect_weight()` and `cacs_run()` leave that tract out of the
+  variable's total or average without a warning, so a total comes out too
+  small, and `cacs_acs_validate()` does not report the missing row.
+  `n_tracts` on that variable's row is then smaller than on the rows of the
+  variables that have the tract.
+* The part of a drive-time area that has no tracts in the ACS data, such as
+  the part across a state line, adds nothing: counts come out too small, and
+  rates and medians come from the remaining tracts. The only warning compares
+  the bounding box of all the drive-time areas with the bounding box of all
+  the tracts, so it is not given when the uncovered part lies inside that box
+  or reaches less than 0.05 degrees (about 5 km) beyond it.
+* The drive-time areas in the example file `legacy_2025_isochrones.rds` are
+  circles with a radius of 1 km per minute of driving, not areas computed by
+  a routing service, yet their routing columns hold fixed values such as
+  `provider = "osrm"`, `routing_engine_version = "OSRM 5.27.1"`, and
+  `osm_snapshot_status = "explicit"`. Results computed from them therefore
+  name OSRM as the provider, in their columns and in the output of `print()`
+  and `cacs_describe()`.
+
 # catchmentACS 0.5.1
 
 * The help pages, the articles, NEWS, the README, the package description in

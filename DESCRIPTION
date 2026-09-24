@@ -1,6 +1,6 @@
 Package: catchmentACS
 Title: Isochrone-Based Area-Weighted ACS Aggregation
-Version: 0.5.1
+Version: 0.6.0
 Authors@R:
     person("JoonHo", "Lee", , "jlee296@ua.edu", role = c("aut", "cre", "cph"),
            comment = c(ORCID = "0009-0006-4019-8703"))
